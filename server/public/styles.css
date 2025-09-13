@@ -143,3 +143,11 @@ tbody tr:hover { background: rgba(255,255,255,.04); }
 .score-weak   { background: rgba(239,68,68,.18); color: #fee2e2; }
 
 /* Tooltip (title attr is fine for now; optional advanced tooltip could go here) */
+
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+th.sortable:hover {
+    color: #4da3ff;
+}
