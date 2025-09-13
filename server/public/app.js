@@ -18,19 +18,83 @@ async function getPricesForTickers(tickers) {
     return priceMap;
 }
 
+async function getScoresForTickers(tickers) {
+    const unique = [...new Set(tickers)];
+    if (unique.length === 0) return {};
+    const url = '/api/score-bulk?tickers=' + encodeURIComponent(unique.join(','));
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({ scores: [] }));
+    const map = {};
+    for (const s of (data?.scores ?? [])) if (s && s.ticker) map[s.ticker] = s;
+    return map;
+}
+
+function scoreBadge(score) {
+    if (score == null || Number.isNaN(Number(score))) {
+        return `<span class="score-badge score-neutral">-</span>`;
+    }
+    const n = Number(score);
+    let cls = 'score-weak';
+    if (n >= 80) cls = 'score-strong';
+    else if (n >= 65) cls = 'score-good';
+    else if (n >= 50) cls = 'score-neutral';
+    return `<span class="score-badge ${cls}" title="Conviction Score">${n}</span>`;
+}
+
+async function loadTrades() {
+    const res = await fetch('/api/trades');
+    const data = await res.json();
+
+    const tickers = data.map(r => r.ticker);
+    const [prices, scores] = await Promise.all([
+        getPricesForTickers(tickers),
+        getScoresForTickers(tickers)
+    ]);
+
+    const tbody = document.querySelector('#trades tbody');
+    tbody.innerHTML = '';
+
+    for (const t of data) {
+        const curr = prices[t.ticker];
+        const buy  = (t.price==null? null : Number(t.price));
+        const pct  = (curr!=null && buy!=null && buy>0) ? ((curr - buy) / buy) * 100 : null;
+
+        const scObj = scores[t.ticker];
+        const scVal = scObj?.score ?? null;
+        const bd    = scObj?.breakdown ?? null;
+        const bdTitle = bd
+            ? `Insider: ${Number(bd.insider).toFixed?.(0) || bd.insider}
+Cluster: ${Number(bd.cluster).toFixed?.(0) || bd.cluster}
+Valuation: ${Number(bd.valuation).toFixed?.(0) || bd.valuation}
+Momentum: ${Number(bd.momentum).toFixed?.(0) || bd.momentum}
+Liquidity: ${Number(bd.liquidity).toFixed?.(0) || bd.liquidity}`
+            : 'No breakdown';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+      <td>${fmtDate(t.filing_date)}</td>
+      <td><strong>${t.ticker}</strong></td>
+      <td>${t.insider_name}</td>
+      <td>${t.insider_title}</td>
+      <td class="num">${buy==null?'-':buy.toFixed(2)}</td>
+      <td class="num">${fmtNum(t.shares)}</td>
+      <td class="num">${fmtMoney(t.value_usd)}</td>
+      <td class="num">${curr==null?'-':curr.toFixed(2)}</td>
+      <td class="num ${pct==null?'':(pct>=0?'pos':'neg')}">${pct==null?'-':pct.toFixed(1)+'%'}</td>
+      <td class="num" title="${bdTitle.replace(/"/g,'&quot;')}">${scoreBadge(scVal)}</td>
+      <td><a class="link" href="${t.source_url}" target="_blank" rel="noreferrer">Open Form 4</a></td>
+    `;
+        tbody.appendChild(tr);
+    }
+}
+
+// clusters unchanged, but keep here to ensure page loads:
 async function loadClusters() {
     const res = await fetch('/api/clusters');
     const data = await res.json();
     const wrap = document.getElementById('clusters');
     wrap.innerHTML = '';
     for (const c of data) {
-        let curr = null;
-        try {
-            const priceRes = await fetch('/api/price/' + encodeURIComponent(c.ticker));
-            const priceObj = priceRes.ok ? await priceRes.json() : null;
-            curr = priceObj ? Number(priceObj.close) : null;
-        } catch {}
-
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
@@ -44,55 +108,8 @@ async function loadClusters() {
           <div>Trades: ${c.trade_count}</div>
           <div>Total: <b>${fmtMoney(c.total_value_usd)}</b></div>
         </div>
-      </div>
-      <div class="meta" style="margin-top:8px">Current: <b>${curr==null?'-':curr.toFixed(2)}</b></div>
-      <canvas height="110" style="margin-top:10px;"></canvas>
-    `;
+      </div>`;
         wrap.appendChild(card);
-
-        const ctx = card.querySelector('canvas').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: ['Cluster Total (USD)', 'Price (USD)'],
-                datasets: [{ label: c.ticker, data: [Number(c.total_value_usd), curr ?? 0] }]
-            },
-            options: {
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, ticks: { color: '#a9b1c6' } }, x: { ticks: { color: '#a9b1c6' } } }
-            }
-        });
-    }
-}
-
-async function loadTrades() {
-    const res = await fetch('/api/trades');
-    const data = await res.json();
-
-    const tickers = data.map(r => r.ticker);
-    const prices = await getPricesForTickers(tickers);
-
-    const tbody = document.querySelector('#trades tbody');
-    tbody.innerHTML = '';
-    for (const t of data) {
-        const curr = prices[t.ticker];
-        const buy  = (t.price==null? null : Number(t.price));
-        const pct  = (curr!=null && buy!=null && buy>0) ? ((curr - buy) / buy) * 100 : null;
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-      <td>${fmtDate(t.filing_date)}</td>
-      <td><strong>${t.ticker}</strong></td>
-      <td>${t.insider_name}</td>
-      <td>${t.insider_title}</td>
-      <td class="num">${buy==null?'-':buy.toFixed(2)}</td>
-      <td class="num">${fmtNum(t.shares)}</td>
-      <td class="num">${fmtMoney(t.value_usd)}</td>
-      <td class="num">${curr==null?'-':curr.toFixed(2)}</td>
-      <td class="num ${pct==null?'':(pct>=0?'pos':'neg')}">${pct==null?'-':pct.toFixed(1)+'%'}</td>
-      <td><a class="link" href="${t.source_url}" target="_blank" rel="noreferrer">Open Form 4</a></td>
-    `;
-        tbody.appendChild(tr);
     }
 }
 
@@ -120,3 +137,52 @@ document.getElementById('trigger').addEventListener('click', async () => {
     await loadClusters();
     await loadTrades();
 })();
+
+
+function tradingViewLink(ticker) {
+    return `https://www.tradingview.com/symbols/${ticker}/`;
+}
+
+function renderTradeRow(t, prices, scores) {
+    const curr = prices[t.ticker];
+    const buy  = (t.price==null? null : Number(t.price));
+    const pct  = (curr!=null && buy!=null && buy>0) ? ((curr - buy) / buy) * 100 : null;
+
+    const scObj = scores[t.ticker];
+    const scVal = scObj?.score ?? null;
+    const bd    = scObj?.breakdown ?? null;
+    const bdTitle = bd
+        ? `Insider: ${bd.insider}\nCluster: ${bd.cluster}\nValuation: ${bd.valuation}\nMomentum: ${bd.momentum}\nLiquidity: ${bd.liquidity}`
+        : 'No breakdown';
+
+    return `
+    <tr>
+      <td>${fmtDate(t.filing_date)}</td>
+      <td><strong>${t.ticker}</strong></td>
+      <td>${t.insider_name}</td>
+      <td>${t.insider_title}</td>
+      <td class="num">${buy==null?'-':buy.toFixed(2)}</td>
+      <td class="num">${fmtNum(t.shares)}</td>
+      <td class="num">${fmtMoney(t.value_usd)}</td>
+      <td class="num">${curr==null?'-':curr.toFixed(2)}</td>
+      <td class="num ${pct==null?'':(pct>=0?'pos':'neg')}">${pct==null?'-':pct.toFixed(1)+'%'}</td>
+      <td class="num" title="${bdTitle.replace(/"/g,'&quot;')}">${scoreBadge(scVal)}</td>
+      <td><a class="link" href="${t.source_url}" target="_blank" rel="noreferrer">Open Form 4</a></td>
+      <td><a class="link" href="${tradingViewLink(t.ticker)}" target="_blank" rel="noreferrer">View Chart</a></td>
+    </tr>
+  `;
+}
+
+async function loadTrades() {
+    const res = await fetch('/api/trades');
+    const data = await res.json();
+
+    const tickers = data.map(r => r.ticker);
+    const [prices, scores] = await Promise.all([
+        getPricesForTickers(tickers),
+        getScoresForTickers(tickers)
+    ]);
+
+    const tbody = document.querySelector('#trades tbody');
+    tbody.innerHTML = data.map(t => renderTradeRow(t, prices, scores)).join('');
+}

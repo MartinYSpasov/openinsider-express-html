@@ -7,7 +7,6 @@
     --text:#e5e7eb;
     --accent:#60a5fa;
     --accent2:#34d399;
-    --warn:#f59e0b;
     --pos:#10b981;
     --neg:#ef4444;
     --shadow: 0 10px 30px rgba(0,0,0,.35);
@@ -126,3 +125,21 @@ tbody tr:hover { background: rgba(255,255,255,.04); }
 .status { color: var(--muted); font-size: 12px; }
 .link { color: #cfe3ff; text-decoration: none; }
 .link:hover { text-decoration: underline; }
+
+/* Score badge */
+.score-badge {
+    display: inline-block;
+    min-width: 40px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 12px;
+    border: 1px solid var(--border);
+}
+.score-strong { background: rgba(16,185,129,.18); color: #d1fae5; }
+.score-good   { background: rgba(59,130,246,.18); color: #dbeafe; }
+.score-neutral{ background: rgba(245,158,11,.18); color: #fef3c7; }
+.score-weak   { background: rgba(239,68,68,.18); color: #fee2e2; }
+
+/* Tooltip (title attr is fine for now; optional advanced tooltip could go here) */
