@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Insider Cluster Buys (CEO/CFO ≥ $500k)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- External CSS -->
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<div class="container">
+    <!-- Header -->
+    <div class="header">
+        <div class="title">
+            <span class="badge">INSIDER DASH</span>
+            <h1>CEO/CFO Buys ≥ $500k</h1>
+        </div>
+        <div class="controls">
+            <button id="trigger" class="btn">Run Now</button>
+            <span id="status" class="status"></span>
+        </div>
+    </div>
+
+    <!-- Clusters -->
+    <div class="section">
+        <h2>Cluster Signals</h2>
+        <span class="hint">Aggregated insider purchases in a short window</span>
+    </div>
+    <div id="clusters" class="grid"></div>
+
+    <!-- Divider line before Latest Qualifying Buys -->
+    <div class="divider"></div>
+
+    <!-- Latest Qualifying Buys -->
+    <div class="section">
+        <h2>Latest Qualifying Buys</h2>
+        <span class="hint">CEO/CFO purchases (≥ $500k) from recent filings</span>
+    </div>
+    <div class="table-wrap">
+        <table id="trades">
+            <thead>
+            <tr>
+                <th>Date</th>
+                <th>Ticker</th>
+                <th>Insider</th>
+                <th>Title</th>
+                <th class="num">Buy Price</th>
+                <th class="num">Shares</th>
+                <th class="num">Value</th>
+                <th class="num">Current</th>
+                <th class="num">% vs Buy</th>
+                <th>Form 4</th>
+            </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div style="height:24px"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
