@@ -19,22 +19,40 @@ function setStatus(msg, isError = false) {
 }
 
 function getMinBuyUSD() {
-    const inp = $('minBuy');
-    const v = inp ? Number(inp.value) : NaN;
-    if (Number.isFinite(v) && v >= 0) return v;
+    const el = document.getElementById('minBuy');
+
+    // If input is empty, do NOT coerce to 0
+    const raw = el ? String(el.value ?? '').trim() : '';
+    if (raw !== '') {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n >= 0) return n; // user provided a number (including 0)
+    }
+
+    // Next: URL query ?minBuy=...
     const qs = new URLSearchParams(location.search);
-    const qv = Number(qs.get('minBuy'));
-    if (Number.isFinite(qv) && qv >= 0) return qv;
-    return DEFAULT_MIN_BUY_USD || 500000;
+    const qRaw = String(qs.get('minBuy') ?? '').trim();
+    if (qRaw !== '') {
+        const qn = Number(qRaw);
+        if (Number.isFinite(qn) && qn >= 0) return qn;
+    }
+
+    // Fallback default
+    return Number((typeof process !== 'undefined' && process.env && process.env.MIN_BUY_USD) || 500000);
 }
+
 
 // init minBuy input if present
 (function initMinBuy() {
-    const inp = $('minBuy');
-    if (!inp) return;
+    const el = document.getElementById('minBuy');
+    if (!el) return;
     const qs = new URLSearchParams(location.search);
-    const qv = Number(qs.get('minBuy'));
-    inp.value = Number.isFinite(qv) && qv >= 0 ? String(qv) : String(DEFAULT_MIN_BUY_USD || 500000);
+    const qRaw = String(qs.get('minBuy') ?? '').trim();
+    if (qRaw !== '') {
+        el.value = qRaw; // honor URL if provided
+    } else {
+        // default to 500k
+        el.value = String(Number((typeof process !== 'undefined' && process.env && process.env.MIN_BUY_USD) || 500000));
+    }
 })();
 
 // basic error guards so one failure doesn’t blank the whole page
