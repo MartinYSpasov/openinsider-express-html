@@ -7,6 +7,7 @@ import cron from 'node-cron';
 import { Pool } from 'pg';
 import { runScrapeAndCluster, getPriceCached } from './logic.js';
 import { buildScoreForTicker } from './scoring.js';
+import { summariseCompany } from "./ai.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -123,3 +124,15 @@ cron.schedule(cronExpr, async () => {
 });
 
 app.listen(PORT, () => console.log(`Server up on :${PORT}`));
+
+
+
+app.get("/api/summary/:ticker", async (req, res) => {
+    try {
+        const text = await summariseCompany(req.params.ticker);
+        res.json({ summary: text });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Failed to summarise" });
+    }
+});
