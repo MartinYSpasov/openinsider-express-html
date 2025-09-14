@@ -6,11 +6,18 @@ import { scrapePurchases } from './openinsider.js';
 import { saveTrades, listTrades, listClusters } from './repos.js';
 import { detectClusters } from './clusters.js';
 import { getPriceCached } from './prices.js';
+import { scoreBulk } from './score.js';
+
+const port = process.env.PORT || 4000;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store, max-age=0'); next(); });
+
+app.use(express.static('public'));
+
+app.listen(port, () => console.log(`Server on http://localhost:${port}`));
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -48,8 +55,18 @@ app.get('/api/price/:ticker', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// static files (unchanged)
-app.use(express.static('public'));
+app.get('/api/score-bulk', async (req, res) => {
+    try {
+        const raw = String(req.query.tickers || '');
+        const tickers = raw.split(',').map(s => s.trim()).filter(Boolean);
+        const scores = await scoreBulk(pool, tickers);
+        res.set('Cache-Control', 'no-store').json({ scores });
+    } catch (e) {
+        console.error('[score-bulk]', e);
+        res.status(500).json({ error: e.message, scores: [] });
+    }
+});
 
-const port = process.env.PORT || 4000;
-app.listen(port, () => console.log(`Server on http://localhost:${port}`));
+
+
+
