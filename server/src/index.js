@@ -21,6 +21,9 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
+app.listen(PORT, () => console.log(`Server up on :${PORT}`));
+
+
 // health
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -96,14 +99,14 @@ app.get('/api/score-bulk', async (req, res) => {
 });
 
 // manual run
-app.get('/api/trigger', async (_req, res) => {
-    try {
-        await runScrapeAndCluster(pool);
-        res.json({ ok: true });
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: String(e) });
-    }
+app.get('/api/trigger', async (req, res) => {
+    const minBuy = Number(req.query.minBuy) || undefined; // undefined -> use default
+    runScrapeAndCluster(pool, { minBuyUSD: minBuy })
+        .then(() => res.json({ ok: true }))
+        .catch(err => {
+            console.error(err);
+            res.status(500).json({ error: err.message });
+        });
 });
 
 // dashboard
@@ -123,7 +126,6 @@ cron.schedule(cronExpr, async () => {
     }
 });
 
-app.listen(PORT, () => console.log(`Server up on :${PORT}`));
 
 
 
@@ -135,4 +137,17 @@ app.get("/api/summary/:ticker", async (req, res) => {
         console.error(err);
         res.status(500).json({ error: "Failed to summarise" });
     }
+});
+
+app.get('/api/trades', async (req, res) => {
+    const minBuy = Number(req.query.minBuy) || 0;      // dollars
+    const { rows } = await pool.query(
+        `SELECT *
+       FROM trades
+      WHERE ($1::numeric) = 0 OR value_usd >= $1
+      ORDER BY filing_date DESC
+      LIMIT 500`,
+        [minBuy]
+    );
+    res.json(rows);
 });

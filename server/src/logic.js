@@ -9,17 +9,19 @@ const DEFAULT_MIN_BUY_USD = Number(process.env.MIN_BUY_USD || 500000); // $500k 
 // Convert dollars -> OpenInsider 'vl' (thousands)
 const dollarsToVl = (usd) => Math.max(0, Math.floor((Number(usd) || 0) / 1000));
 
-
-export function buildScreenerUrl(page = 1, minBuyUSD = DEFAULT_MIN_BUY_USD) {
-    // CEO + CFO, Purchases, ≥ minBuyUSD, last 30d, 100 rows/page (HTTP)
-    const vl = dollarsToVl(minBuyUSD);
-    return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=30&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
-}
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const toMoney = (s) => (s ? Number(String(s).replace(/[+$,]/g, '')) : undefined);
 const toInt   = (s) => (s ? Number(String(s).replace(/[+,]/g,   '')) : undefined);
 const DEBUG = !!process.env.DEBUG_SCRAPE;
 const PAGES = Number(process.env.PAGES || 1);
+
+
+export function buildScreenerUrl(page = 1, minBuyUSD = DEFAULT_MIN_BUY_USD) {
+    // CEO + CFO, Purchases, ≥ minBuyUSD, last 30d, 100 rows/page
+    const vl = dollarsToVl(minBuyUSD);
+    return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=30&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
+}
+
 
 // Parse <table class="tinytable"> using header labels
 export async function fetchScreenerPage(url) {
@@ -99,15 +101,18 @@ export async function fetchScreenerPage(url) {
     return rows;
 }
 
+// REPLACE your current function with this (identical signature to keep callers happy)
 export async function scrapeFiltered(minBuyUSD = DEFAULT_MIN_BUY_USD) {
     let all = [];
     for (let page = 1; page <= PAGES; page++) {
-        const url = buildScreenerUrl(page, minBuyUSD);   // <-- pass through
+        const url = buildScreenerUrl(page, minBuyUSD);  // <-- pass through
         if (DEBUG) console.log('[scrape] GET', url);
         const rows = await fetchScreenerPage(url);
         all = all.concat(rows);
         await delay(900);
     }
+
+    // safety (should already be purchases due to xp=1)
     const filtered = all.filter(r => String(r.transaction || '').toLowerCase().includes('purchase'));
     if (DEBUG) console.log('[scrape] rawCount:', all.length, 'filteredCount:', filtered.length);
     return filtered;
@@ -190,8 +195,8 @@ export async function detectClusters(pool) {
     }
 }
 
-export async function runScrapeAndCluster(pool) {
-    const trades = await scrapeFiltered();
+export async function runScrapeAndCluster(pool, { minBuyUSD } = {}) {
+    const trades = await scrapeFiltered(minBuyUSD);  // may be undefined -> default
     if (DEBUG) console.log('[run] saving trades:', trades.length);
     await saveTrades(pool, trades);
     await detectClusters(pool);
