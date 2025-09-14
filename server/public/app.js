@@ -1,122 +1,150 @@
-// === utils ===
+"use strict";
+
+/* ========= utils ========= */
+const $ = (id) => document.getElementById(id);
 const fmtMoney = n => (n == null ? '-' : '$' + Number(n).toLocaleString());
 const fmtNum   = n => (n == null ? '-' : Number(n).toLocaleString());
-const fmtDate  = s => new Date(s).toLocaleDateString();
+const fmtDate  = s => (s ? new Date(s).toLocaleDateString() : '-');
+const sleep    = (ms) => new Promise(r => setTimeout(r, ms));
 
 const DEFAULT_MIN_BUY_USD = Number(
     (typeof process !== 'undefined' && process.env && process.env.MIN_BUY_USD) || 500000
 );
 
-// quick sleep
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function setStatus(msg, isError = false) {
+    const el = $('status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.color = isError ? '#c00' : '#555';
+}
 
-// Read minBuy from input > URL > default
 function getMinBuyUSD() {
-    const el = document.getElementById('minBuy');
-    const fromInput = el ? Number(el.value) : NaN;
-    if (Number.isFinite(fromInput) && fromInput >= 0) return fromInput;
-
-    const q = new URLSearchParams(location.search);
-    const fromQuery = Number(q.get('minBuy'));
-    if (Number.isFinite(fromQuery) && fromQuery >= 0) return fromQuery;
-
+    const inp = $('minBuy');
+    const v = inp ? Number(inp.value) : NaN;
+    if (Number.isFinite(v) && v >= 0) return v;
+    const qs = new URLSearchParams(location.search);
+    const qv = Number(qs.get('minBuy'));
+    if (Number.isFinite(qv) && qv >= 0) return qv;
     return DEFAULT_MIN_BUY_USD || 500000;
 }
 
-// Initialize minBuy input from URL/default
+// init minBuy input if present
 (function initMinBuy() {
-    const el = document.getElementById('minBuy');
-    if (!el) return;
-    const q = new URLSearchParams(location.search);
-    const v = Number(q.get('minBuy'));
-    el.value = Number.isFinite(v) && v >= 0 ? String(v) : String(DEFAULT_MIN_BUY_USD || 500000);
+    const inp = $('minBuy');
+    if (!inp) return;
+    const qs = new URLSearchParams(location.search);
+    const qv = Number(qs.get('minBuy'));
+    inp.value = Number.isFinite(qv) && qv >= 0 ? String(qv) : String(DEFAULT_MIN_BUY_USD || 500000);
 })();
+
+// basic error guards so one failure doesn’t blank the whole page
+window.addEventListener('error', e => setStatus(`Error: ${e.message}`, true));
+window.addEventListener('unhandledrejection', e => setStatus(`Request failed`, true));
 
 function tradingViewLink(ticker) {
     return `https://www.tradingview.com/symbols/${ticker}/`;
 }
 
-// === data fetchers ===
+/* ========= data fetchers ========= */
+async function fetchJSON(url) {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText} — ${text.slice(0,120)}`);
+    }
+    // in case server sent empty body
+    const txt = await res.text();
+    if (!txt) return null;
+    try {
+        return JSON.parse(txt);
+    } catch {
+        throw new Error('Invalid JSON from server');
+    }
+}
+
 async function getPricesForTickers(tickers) {
     const unique = [...new Set(tickers)];
-    const priceMap = {};
-    await Promise.all(unique.map(async (t) => {
+    const map = {};
+    await Promise.all(unique.map(async t => {
         try {
-            const res = await fetch(`/api/price/${encodeURIComponent(t)}?_=${Date.now()}`, { cache: 'no-store' });
-            if (!res.ok) throw new Error(await res.text());
-            const p = await res.json();
-            priceMap[t] = Number(p.close);
+            const j = await fetchJSON(`/api/price/${encodeURIComponent(t)}?_=${Date.now()}`);
+            map[t] = Number(j?.close);
         } catch {
-            priceMap[t] = null;
+            map[t] = null;
         }
     }));
-    return priceMap;
+    return map;
 }
 
 async function getScoresForTickers(tickers) {
     const unique = [...new Set(tickers)];
-    if (unique.length === 0) return {};
-    const url = '/api/score-bulk?tickers=' + encodeURIComponent(unique.join(',')) + `&_=${Date.now()}`;
-    const res = await fetch(url, { cache: 'no-store' });
-    const data = await res.json().catch(() => ({ scores: [] }));
+    if (!unique.length) return {};
+    const j = await fetchJSON('/api/score-bulk?tickers=' + encodeURIComponent(unique.join(',')) + `&_=${Date.now()}`)
+        .catch(() => ({ scores: [] }));
     const map = {};
-    for (const s of (data?.scores ?? [])) if (s && s.ticker) map[s.ticker] = s;
+    for (const s of (j?.scores ?? [])) if (s && s.ticker) map[s.ticker] = s;
     return map;
 }
 
-// helpers with cache-busting
 async function fetchTradesList(minBuy) {
-    const url = '/api/trades?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return fetchJSON('/api/trades?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`);
 }
 async function fetchClustersList(minBuy) {
-    const url = '/api/clusters?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return fetchJSON('/api/clusters?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`);
 }
 
-// signature to detect table changes
 function tradesSignature(list, n = 50) {
     return (list || [])
         .slice(0, n)
-        .map(r => `${r.ticker}|${r.filing_date}|${r.value_usd}|${r.insider_name}`)
+        .map(r => `${r?.ticker}|${r?.filing_date}|${r?.value_usd}|${r?.insider_name}`)
         .join('||');
 }
 
-// === clusters ===
+/* ========= clusters ========= */
 async function loadClusters() {
     const minBuy = getMinBuyUSD();
-    const data = await fetchClustersList(minBuy);
-    const wrap = document.getElementById('clusters');
-    wrap.innerHTML = '';
-    for (const c of data) {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `
-      <div class="card-head">
-        <div>
-          <div class="ticker">${c.ticker}</div>
-          <div class="meta">${fmtDate(c.window_start)} → ${fmtDate(c.window_end)}</div>
-        </div>
-        <div class="right">
-          <div>Insiders: <span class="pill">${c.insider_count}</span></div>
-          <div>Trades: ${c.trade_count}</div>
-          <div>Total: <b>${fmtMoney(c.total_value_usd)}</b></div>
-        </div>
-      </div>`;
-        wrap.appendChild(card);
+    try {
+        const data = await fetchClustersList(minBuy) || [];
+        const wrap = $('clusters');
+        if (!wrap) return;
+        wrap.innerHTML = '';
+        for (const c of data) {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = `
+        <div class="card-head">
+          <div>
+            <div class="ticker">${c.ticker}</div>
+            <div class="meta">${fmtDate(c.window_start)} → ${fmtDate(c.window_end)}</div>
+          </div>
+          <div class="right">
+            <div>Insiders: <span class="pill">${c.insider_count}</span></div>
+            <div>Trades: ${c.trade_count}</div>
+            <div>Total: <b>${fmtMoney(c.total_value_usd)}</b></div>
+          </div>
+        </div>`;
+            wrap.appendChild(card);
+        }
+    } catch (e) {
+        setStatus(`Clusters failed: ${e.message}`, true);
     }
 }
 
-// === trades state + sort ===
+/* ========= trades ========= */
 let tradesCache = [];
-let sortPctAsc = true; // toggle flag for % vs Buy
-let lastTradesSig = ''; // used to detect updates after trigger
+let sortPctAsc = true;
+let lastTradesSig = '';
 
-// Single, canonical row renderer (includes Links + Actions columns)
+function scoreBadge(score) {
+    const n = Number(score);
+    if (!Number.isFinite(n)) return `<span class="score-badge score-neutral">-</span>`;
+    let cls = 'score-weak';
+    if (n >= 80) cls = 'score-strong';
+    else if (n >= 65) cls = 'score-good';
+    else if (n >= 50) cls = 'score-neutral';
+    return `<span class="score-badge ${cls}" title="Conviction Score">${n}</span>`;
+}
+
 function renderTradeRow(t, prices, scores) {
     const curr = prices[t.ticker];
     const buy  = (t.price == null ? null : Number(t.price));
@@ -125,12 +153,13 @@ function renderTradeRow(t, prices, scores) {
     const scObj = scores[t.ticker];
     const scVal = scObj?.score ?? null;
     const bd    = scObj?.breakdown ?? null;
+    const safeNum0 = (x) => (x == null ? '-' : Number(x).toFixed(0));
     const bdTitle = bd
-        ? `Insider: ${Number(bd.insider).toFixed?.(0) || bd.insider}
-Cluster: ${Number(bd.cluster).toFixed?.(0) || bd.cluster}
-Valuation: ${Number(bd.valuation).toFixed?.(0) || bd.valuation}
-Momentum: ${Number(bd.momentum).toFixed?.(0) || bd.momentum}
-Liquidity: ${Number(bd.liquidity).toFixed?.(0) || bd.liquidity}`
+        ? `Insider: ${safeNum0(bd.insider)}
+Cluster: ${safeNum0(bd.cluster)}
+Valuation: ${safeNum0(bd.valuation)}
+Momentum: ${safeNum0(bd.momentum)}
+Liquidity: ${safeNum0(bd.liquidity)}`
         : 'No breakdown';
 
     return `
@@ -156,18 +185,18 @@ Liquidity: ${Number(bd.liquidity).toFixed?.(0) || bd.liquidity}`
   `;
 }
 
-// Render with current sort & caches
 function renderTrades(prices, scores) {
     const tbody = document.querySelector('#trades tbody');
-    let trades = [...tradesCache];
+    if (!tbody) return;
 
-    // apply % vs Buy sort
+    let trades = Array.isArray(tradesCache) ? [...tradesCache] : [];
+
     trades.sort((a, b) => {
         const currA = prices[a.ticker], buyA = Number(a.price);
-        const pctA = (currA && buyA) ? ((currA - buyA)/buyA)*100 : -Infinity;
+        const pctA = (Number.isFinite(currA) && Number.isFinite(buyA) && buyA > 0) ? ((currA - buyA)/buyA)*100 : -Infinity;
 
         const currB = prices[b.ticker], buyB = Number(b.price);
-        const pctB = (currB && buyB) ? ((currB - buyB)/buyB)*100 : -Infinity;
+        const pctB = (Number.isFinite(currB) && Number.isFinite(buyB) && buyB > 0) ? ((currB - buyB)/buyB)*100 : -Infinity;
 
         return sortPctAsc ? pctA - pctB : pctB - pctA;
     });
@@ -175,52 +204,63 @@ function renderTrades(prices, scores) {
     tbody.innerHTML = trades.map(t => renderTradeRow(t, prices, scores)).join('');
 }
 
-// Fetch and render trades
 async function loadTrades() {
     const minBuy = getMinBuyUSD();
-    tradesCache = await fetchTradesList(minBuy);
-
-    // update signature for 2nd-run comparisons
-    lastTradesSig = tradesSignature(tradesCache);
-
-    const tickers = tradesCache.map(r => r.ticker);
-    const [prices, scores] = await Promise.all([
-        getPricesForTickers(tickers),
-        getScoresForTickers(tickers)
-    ]);
-
-    renderTrades(prices, scores);
-}
-
-// Click to toggle % vs Buy sort and re-render
-document.getElementById('sort-pct')?.addEventListener('click', () => {
-    sortPctAsc = !sortPctAsc;
-    const tickers = tradesCache.map(r => r.ticker);
-    Promise.all([
-        getPricesForTickers(tickers),
-        getScoresForTickers(tickers)
-    ]).then(([prices, scores]) => renderTrades(prices, scores));
-});
-
-// AI summary action
-async function loadSummary(ticker) {
     try {
-        const res = await fetch(`/api/summary/${ticker}?_=${Date.now()}`, { cache: 'no-store' });
-        const data = await res.json();
-        if (data.error) {
-            alert(`Error: ${data.error}`);
-        } else {
-            alert(`${ticker} Summary:\n\n${data.summary}`);
-        }
-    } catch (err) {
-        console.error(err);
-        alert("Failed to load summary");
+        const list = await fetchTradesList(minBuy);
+        tradesCache = Array.isArray(list) ? list : [];
+        lastTradesSig = tradesSignature(tradesCache);
+
+        const tickers = tradesCache.map(r => r.ticker);
+        const [prices, scores] = await Promise.allSettled([
+            getPricesForTickers(tickers),
+            getScoresForTickers(tickers)
+        ]);
+
+        const priceMap = prices.status === 'fulfilled' ? prices.value : {};
+        const scoreMap = scores.status === 'fulfilled' ? scores.value : {};
+
+        renderTrades(priceMap, scoreMap);
+    } catch (e) {
+        setStatus(`Trades failed: ${e.message}`, true);
+        const tbody = document.querySelector('#trades tbody');
+        if (tbody) tbody.innerHTML = '';
     }
 }
 
-// poll until trades actually change after a trigger
+/* ========= interactions ========= */
+$('sort-pct')?.addEventListener('click', async () => {
+    sortPctAsc = !sortPctAsc;
+    try {
+        const tickers = tradesCache.map(r => r.ticker);
+        const [prices, scores] = await Promise.allSettled([
+            getPricesForTickers(tickers),
+            getScoresForTickers(tickers)
+        ]);
+        renderTrades(
+            prices.status === 'fulfilled' ? prices.value : {},
+            scores.status === 'fulfilled' ? scores.value : {}
+        );
+    } catch {
+        /* no-op */
+    }
+});
+
+async function loadSummary(ticker) {
+    try {
+        const j = await fetchJSON(`/api/summary/${ticker}?_=${Date.now()}`);
+        if (j?.error) alert(`Error: ${j.error}`);
+        else alert(`${ticker} Summary:\n\n${j?.summary || '(empty)'}`);
+    } catch (e) {
+        console.error(e);
+        alert("Failed to load summary");
+    }
+}
+window.loadSummary = loadSummary; // expose for onclick
+
 async function waitForUpdatedTrades(minBuy) {
-    const maxAttempts = 12;   // ~12 * 800ms ≈ ~10s
+    // give the backend a moment to write rows
+    const maxAttempts = 12;  // ~10s
     const delayMs = 800;
 
     for (let i = 0; i < maxAttempts; i++) {
@@ -229,84 +269,91 @@ async function waitForUpdatedTrades(minBuy) {
             const fresh = await fetchTradesList(minBuy);
             const sig = tradesSignature(fresh);
             if (sig !== lastTradesSig) {
-                tradesCache = fresh;
+                tradesCache = Array.isArray(fresh) ? fresh : [];
                 lastTradesSig = sig;
 
                 const tickers = tradesCache.map(r => r.ticker);
-                const [prices, scores] = await Promise.all([
+                const [prices, scores] = await Promise.allSettled([
                     getPricesForTickers(tickers),
                     getScoresForTickers(tickers)
                 ]);
-                renderTrades(prices, scores);
+                renderTrades(
+                    prices.status === 'fulfilled' ? prices.value : {},
+                    scores.status === 'fulfilled' ? scores.value : {}
+                );
 
                 // refresh clusters too
-                const clusters = await fetchClustersList(minBuy);
-                const wrap = document.getElementById('clusters');
-                wrap.innerHTML = '';
-                for (const c of clusters) {
-                    const card = document.createElement('div');
-                    card.className = 'card';
-                    card.innerHTML = `
-            <div class="card-head">
-              <div>
-                <div class="ticker">${c.ticker}</div>
-                <div class="meta">${fmtDate(c.window_start)} → ${fmtDate(c.window_end)}</div>
-              </div>
-              <div class="right">
-                <div>Insiders: <span class="pill">${c.insider_count}</span></div>
-                <div>Trades: ${c.trade_count}</div>
-                <div>Total: <b>${fmtMoney(c.total_value_usd)}</b></div>
-              </div>
-            </div>`;
-                    wrap.appendChild(card);
+                const clusters = await fetchClustersList(minBuy).catch(() => []);
+                const wrap = $('clusters');
+                if (wrap) {
+                    wrap.innerHTML = '';
+                    for (const c of (clusters || [])) {
+                        const card = document.createElement('div');
+                        card.className = 'card';
+                        card.innerHTML = `
+              <div class="card-head">
+                <div>
+                  <div class="ticker">${c.ticker}</div>
+                  <div class="meta">${fmtDate(c.window_start)} → ${fmtDate(c.window_end)}</div>
+                </div>
+                <div class="right">
+                  <div>Insiders: <span class="pill">${c.insider_count}</span></div>
+                  <div>Trades: ${c.trade_count}</div>
+                  <div>Total: <b>${fmtMoney(c.total_value_usd)}</b></div>
+                </div>
+              </div>`;
+                        wrap.appendChild(card);
+                    }
                 }
                 return true;
             }
         } catch {
-            // ignore and keep polling
+            // keep polling
         }
     }
     return false;
 }
 
-// Run Now button
-document.getElementById('trigger')?.addEventListener('click', async () => {
-    const btn = document.getElementById('trigger');
-    const status = document.getElementById('status');
+$('trigger')?.addEventListener('click', async () => {
+    const btn = $('trigger');
+    btn.disabled = true; btn.textContent = 'Running…'; setStatus('');
     const minBuy = getMinBuyUSD();
 
-    btn.disabled = true; btn.textContent = 'Running…'; status.textContent = '';
-
     try {
-        // start a fresh trigger and explicitly prevent caches
-        const res = await fetch('/api/trigger?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) throw new Error(await res.text());
-
-        // wait until the /api/trades output actually changes
-        const updated = await waitForUpdatedTrades(minBuy);
-        status.textContent = updated ? 'Refreshed.' : 'No new changes.';
+        await fetchJSON('/api/trigger?minBuy=' + encodeURIComponent(minBuy) + `&_=${Date.now()}`);
     } catch (e) {
-        console.error(e);
-        status.textContent = 'Failed.';
-        // in case of error, still attempt a regular refresh
-        await loadClusters();
-        await loadTrades();
-    } finally {
-        btn.disabled = false; btn.textContent = 'Run Now';
-        setTimeout(()=> status.textContent='', 2500);
+        // Even if the trigger endpoint returns before the job finishes (or 500s),
+        // we’ll still try to reload what’s available.
+        console.warn('Trigger call error:', e.message);
     }
+
+    // Try to detect real data changes, then render
+    const updated = await waitForUpdatedTrades(minBuy);
+    setStatus(updated ? 'Refreshed.' : 'No new changes.');
+
+    // As a fallback, do a regular refresh too
+    await loadClusters();
+    await loadTrades();
+
+    btn.disabled = false; btn.textContent = 'Run Now';
+    setTimeout(() => setStatus(''), 2500);
 });
 
-// Enter-to-refresh for minBuy input if present
-document.getElementById('minBuy')?.addEventListener('keydown', (e) => {
+// Enter in minBuy input triggers reload
+$('minBuy')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         loadClusters();
         loadTrades();
     }
 });
 
-// initial load
+/* ========= initial load ========= */
 (async () => {
     await loadClusters();
     await loadTrades();
 })();
+
+
+fetch('/api/trades?minBuy='   + minBuy + '&_=' + Date.now(), { cache: 'no-store' })
+fetch('/api/clusters?minBuy=' + minBuy + '&_=' + Date.now(), { cache: 'no-store' })
+fetch('/api/trigger?minBuy='  + minBuy + '&_=' + Date.now(), { cache: 'no-store' })

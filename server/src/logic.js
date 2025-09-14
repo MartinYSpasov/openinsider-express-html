@@ -4,10 +4,8 @@ import * as cheerio from 'cheerio';
 import yf from 'yahoo-finance2';
 
 
-const DEFAULT_MIN_BUY_USD = Number(process.env.MIN_BUY_USD || 500000); // $500k default
-
-// Convert dollars -> OpenInsider 'vl' (thousands)
-const dollarsToVl = (usd) => Math.max(0, Math.floor((Number(usd) || 0) / 1000));
+const DEFAULT_MIN_BUY_USD = Number(process.env.MIN_BUY_USD || 500000);
+const dollarsToVl = usd => Math.max(0, Math.floor((Number(usd) || 0) / 1000));
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const toMoney = (s) => (s ? Number(String(s).replace(/[+$,]/g, '')) : undefined);
@@ -16,10 +14,9 @@ const DEBUG = !!process.env.DEBUG_SCRAPE;
 const PAGES = Number(process.env.PAGES || 1);
 
 
-// REPLACE your current builder with this:
+// replace your builder with this
 export function buildScreenerUrl(page = 1, minBuyUSD = DEFAULT_MIN_BUY_USD) {
-    // CEO + CFO, Purchases, ≥ minBuyUSD, last 30d, 100 rows/page
-    const vl = dollarsToVl(minBuyUSD);
+    const vl = dollarsToVl(minBuyUSD); // OpenInsider expects thousands (500 -> $500k)
     return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=30&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
 }
 
@@ -101,21 +98,19 @@ export async function fetchScreenerPage(url) {
     return rows;
 }
 
-// REPLACE your current scrapeFiltered with this:
+// pass minBuy through every page fetch
 export async function scrapeFiltered(minBuyUSD = DEFAULT_MIN_BUY_USD) {
     let all = [];
     for (let page = 1; page <= PAGES; page++) {
-        const url = buildScreenerUrl(page, minBuyUSD); // <-- pass through
+        const url = buildScreenerUrl(page, minBuyUSD);
         if (DEBUG) console.log('[scrape] GET', url);
         const rows = await fetchScreenerPage(url);
         all = all.concat(rows);
         await delay(900);
     }
-    // safety
-    const filtered = all.filter(r => String(r.transaction || '').toLowerCase().includes('purchase'));
-    if (DEBUG) console.log('[scrape] rawCount:', all.length, 'filteredCount:', filtered.length);
-    return filtered;
+    return all.filter(r => String(r.transaction || '').toLowerCase().includes('purchase'));
 }
+
 
 export async function saveTrades(pool, trades) {
     for (const r of trades) {
@@ -161,10 +156,10 @@ export async function detectClusters(pool, { minBuyUSD = 0 } = {}) {
         `SELECT *
          FROM trades
          WHERE filing_date >= NOW() - INTERVAL '${windowDays} days'
-             AND transaction ILIKE '%purchase%'
-             AND ($1::numeric) = 0 OR value_usd >= $1`,
+           AND transaction ILIKE '%purchase%'
+           AND ( $1::numeric = 0 OR value_usd >= $1 )`,
         [minBuyUSD]
-    );
+);
 
     const byTicker = new Map();
     for (const t of rows) {
@@ -199,13 +194,15 @@ export async function detectClusters(pool, { minBuyUSD = 0 } = {}) {
 
 
 // REPLACE your current runScrapeAndCluster signature/body with this:
+// allow run() to accept minBuyUSD
 export async function runScrapeAndCluster(pool, { minBuyUSD = DEFAULT_MIN_BUY_USD } = {}) {
     const trades = await scrapeFiltered(minBuyUSD);
     if (DEBUG) console.log('[run] saving trades:', trades.length);
     await saveTrades(pool, trades);
-    await detectClusters(pool, { minBuyUSD });
+    await detectClusters(pool, { minBuyUSD }); // pass to clusters, too
     if (DEBUG) console.log('[run] complete');
 }
+
 export async function getPriceCached(pool, ticker) {
     const { rows: recent } = await pool.query(
         `SELECT *

@@ -28,26 +28,27 @@ app.listen(PORT, () => console.log(`Server up on :${PORT}`));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // latest trades
-app.get('/api/trades', async (_req, res) => {
+app.get('/api/trades', async (req, res) => {
+    const minBuyUSD = Number(req.query.minBuy) || 0;
     const { rows } = await pool.query(
-        `SELECT id, ticker, filing_date, trade_date, insider_name, insider_title,
-                transaction, shares, price, value_usd, source_url
-         FROM trades
-         ORDER BY filing_date DESC
-         LIMIT 250`
+        `SELECT *
+       FROM trades
+      WHERE ( $1::numeric = 0 OR value_usd >= $1 )
+      ORDER BY filing_date DESC
+      LIMIT 500`,
+        [minBuyUSD]
     );
-    res.json(rows);
+    res.set('Cache-Control', 'no-store').json(rows);
 });
 
-// clusters
 app.get('/api/clusters', async (req, res) => {
     const minBuyUSD = Number(req.query.minBuy) || 0;
     const { rows } = await pool.query(
         `SELECT *
-       FROM clusters
-      WHERE ($1::numeric) = 0 OR total_value_usd >= $1
-      ORDER BY window_end DESC
-      LIMIT 200`,
+         FROM clusters
+         WHERE ( $1::numeric = 0 OR total_value_usd >= $1 )
+         ORDER BY window_end DESC
+         LIMIT 200`,
         [minBuyUSD]
     );
     res.set('Cache-Control', 'no-store').json(rows);
@@ -105,10 +106,7 @@ app.get('/api/trigger', async (req, res) => {
     const minBuyUSD = Number(req.query.minBuy) || undefined; // undefined -> default
     runScrapeAndCluster(pool, { minBuyUSD })
         .then(() => res.json({ ok: true }))
-        .catch(err => {
-            console.error(err);
-            res.status(500).json({ error: err.message });
-        });
+        .catch(err => res.status(500).json({ error: err.message }));
 });
 
 
