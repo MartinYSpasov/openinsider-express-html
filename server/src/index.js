@@ -40,14 +40,17 @@ app.get('/api/trades', async (_req, res) => {
 });
 
 // clusters
-app.get('/api/clusters', async (_req, res) => {
+app.get('/api/clusters', async (req, res) => {
+    const minBuyUSD = Number(req.query.minBuy) || 0;
     const { rows } = await pool.query(
-        `SELECT id, ticker, window_start, window_end, insider_count, trade_count, total_value_usd
-         FROM clusters
-         ORDER BY window_start DESC
-         LIMIT 100`
+        `SELECT *
+       FROM clusters
+      WHERE ($1::numeric) = 0 OR total_value_usd >= $1
+      ORDER BY window_end DESC
+      LIMIT 200`,
+        [minBuyUSD]
     );
-    res.json(rows);
+    res.set('Cache-Control', 'no-store').json(rows);
 });
 
 // current price (cached)
@@ -98,16 +101,16 @@ app.get('/api/score-bulk', async (req, res) => {
     }
 });
 
-// manual run
 app.get('/api/trigger', async (req, res) => {
-    const minBuy = Number(req.query.minBuy) || undefined; // undefined -> use default
-    runScrapeAndCluster(pool, { minBuyUSD: minBuy })
+    const minBuyUSD = Number(req.query.minBuy) || undefined; // undefined -> default
+    runScrapeAndCluster(pool, { minBuyUSD })
         .then(() => res.json({ ok: true }))
         .catch(err => {
             console.error(err);
             res.status(500).json({ error: err.message });
         });
 });
+
 
 // dashboard
 app.get('/', (_req, res) => {
@@ -140,14 +143,19 @@ app.get("/api/summary/:ticker", async (req, res) => {
 });
 
 app.get('/api/trades', async (req, res) => {
-    const minBuy = Number(req.query.minBuy) || 0;      // dollars
+    const minBuyUSD = Number(req.query.minBuy) || 0; // dollars
     const { rows } = await pool.query(
         `SELECT *
-       FROM trades
-      WHERE ($1::numeric) = 0 OR value_usd >= $1
-      ORDER BY filing_date DESC
-      LIMIT 500`,
-        [minBuy]
+         FROM trades
+         WHERE ($1::numeric) = 0 OR value_usd >= $1
+         ORDER BY filing_date DESC
+         LIMIT 500`,
+        [minBuyUSD]
     );
-    res.json(rows);
+    res.set('Cache-Control', 'no-store').json(rows);
+});
+
+app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store, max-age=0');
+    next();
 });

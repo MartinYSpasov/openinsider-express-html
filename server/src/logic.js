@@ -16,12 +16,12 @@ const DEBUG = !!process.env.DEBUG_SCRAPE;
 const PAGES = Number(process.env.PAGES || 1);
 
 
+// REPLACE your current builder with this:
 export function buildScreenerUrl(page = 1, minBuyUSD = DEFAULT_MIN_BUY_USD) {
     // CEO + CFO, Purchases, ≥ minBuyUSD, last 30d, 100 rows/page
     const vl = dollarsToVl(minBuyUSD);
     return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=30&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
 }
-
 
 // Parse <table class="tinytable"> using header labels
 export async function fetchScreenerPage(url) {
@@ -101,18 +101,17 @@ export async function fetchScreenerPage(url) {
     return rows;
 }
 
-// REPLACE your current function with this (identical signature to keep callers happy)
+// REPLACE your current scrapeFiltered with this:
 export async function scrapeFiltered(minBuyUSD = DEFAULT_MIN_BUY_USD) {
     let all = [];
     for (let page = 1; page <= PAGES; page++) {
-        const url = buildScreenerUrl(page, minBuyUSD);  // <-- pass through
+        const url = buildScreenerUrl(page, minBuyUSD); // <-- pass through
         if (DEBUG) console.log('[scrape] GET', url);
         const rows = await fetchScreenerPage(url);
         all = all.concat(rows);
         await delay(900);
     }
-
-    // safety (should already be purchases due to xp=1)
+    // safety
     const filtered = all.filter(r => String(r.transaction || '').toLowerCase().includes('purchase'));
     if (DEBUG) console.log('[scrape] rawCount:', all.length, 'filteredCount:', filtered.length);
     return filtered;
@@ -153,7 +152,7 @@ export async function saveTrades(pool, trades) {
     }
 }
 
-export async function detectClusters(pool) {
+export async function detectClusters(pool, { minBuyUSD = 0 } = {}) {
     const windowDays  = Number(process.env.CLUSTER_WINDOW_DAYS || 7);
     const minInsiders = Number(process.env.CLUSTER_MIN_INSIDERS || 2);
     const minTotal    = Number(process.env.CLUSTER_MIN_TOTAL_USD || 500000);
@@ -162,7 +161,9 @@ export async function detectClusters(pool) {
         `SELECT *
          FROM trades
          WHERE filing_date >= NOW() - INTERVAL '${windowDays} days'
-           AND transaction ILIKE '%purchase%'`
+             AND transaction ILIKE '%purchase%'
+             AND ($1::numeric) = 0 OR value_usd >= $1`,
+        [minBuyUSD]
     );
 
     const byTicker = new Map();
@@ -174,7 +175,8 @@ export async function detectClusters(pool) {
     for (const [ticker, list] of byTicker) {
         const insiderSet = new Set(list.map(t => t.insider_name));
         const total = list.reduce((s, t) => s + Number(t.value_usd), 0);
-        if (insiderSet.size >= minInsiders && total >= minTotal) {
+
+        if (insiderSet.size >= minInsiders && total >= Math.max(minTotal, minBuyUSD)) {
             const windowStart = new Date(Math.min(...list.map(t => new Date(t.filing_date).getTime())));
             const windowEnd   = new Date(Math.max(...list.map(t => new Date(t.filing_date).getTime())));
 
@@ -195,14 +197,15 @@ export async function detectClusters(pool) {
     }
 }
 
-export async function runScrapeAndCluster(pool, { minBuyUSD } = {}) {
-    const trades = await scrapeFiltered(minBuyUSD);  // may be undefined -> default
+
+// REPLACE your current runScrapeAndCluster signature/body with this:
+export async function runScrapeAndCluster(pool, { minBuyUSD = DEFAULT_MIN_BUY_USD } = {}) {
+    const trades = await scrapeFiltered(minBuyUSD);
     if (DEBUG) console.log('[run] saving trades:', trades.length);
     await saveTrades(pool, trades);
-    await detectClusters(pool);
+    await detectClusters(pool, { minBuyUSD });
     if (DEBUG) console.log('[run] complete');
 }
-
 export async function getPriceCached(pool, ticker) {
     const { rows: recent } = await pool.query(
         `SELECT *
