@@ -193,7 +193,6 @@ Liquidity: ${safeNum0(bd.liquidity)}`
       <td class="num ${pct == null ? '' : (pct >= 0 ? 'pos' : 'neg')}">${pct == null ? '-' : pct.toFixed(1) + '%'}</td>
       <td class="num" title="${bdTitle.replace(/"/g,'&quot;')}">${scoreBadge(scVal)}</td>
       <td>
-        <a class="link" href="${t.source_url}" target="_blank" rel="noreferrer">Form 4</a> |
         <a class="link" href="${tradingViewLink(t.ticker)}" target="_blank" rel="noreferrer">Chart</a>
       </td>
       <td>
