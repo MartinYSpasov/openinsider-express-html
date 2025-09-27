@@ -239,48 +239,56 @@ class ScreenUniverseRequest(BaseModel):
     cache_hours: float = 20.0
 
 # ----------------------
-# JSON sanitization (avoid NaN/Inf in responses)
+# Helpers: safe JSON
 # ----------------------
-def _is_finite_number(x) -> bool:
+def safe_num(x):
+    """Return a Python float or None (no NaN/inf)."""
     try:
-        return np.isfinite(float(x))
+        f = float(x)
+        return None if not np.isfinite(f) else f
     except Exception:
-        return False
-
-def _to_iso_date(x):
-    try:
-        return pd.Timestamp(x).strftime("%Y-%m-%d")
-    except Exception:
-        return str(x)
-
-def json_sanitize(obj):
-    """Recursively make objects JSON-safe for Starlette (no NaN/Inf)."""
-    if obj is None:
         return None
-    if isinstance(obj, (bool, str)):
-        return obj
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (int,)):
-        return obj
-    if isinstance(obj, (np.floating, float)):
-        return float(obj) if _is_finite_number(obj) else None
-    if isinstance(obj, (pd.Timestamp, np.datetime64)):
-        return _to_iso_date(obj)
-    if isinstance(obj, pd.Series):
-        if isinstance(obj.index, pd.DatetimeIndex):
-            return [{"date": _to_iso_date(ix), "value": json_sanitize(val)} for ix, val in obj.items()]
-        return json_sanitize(obj.to_dict())
-    if isinstance(obj, pd.DataFrame):
-        return [json_sanitize(rec) for rec in obj.to_dict(orient="records")]
-    if isinstance(obj, dict):
-        return {str(k): json_sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [json_sanitize(v) for v in obj]
-    try:
-        return float(obj) if _is_finite_number(obj) else str(obj)
-    except Exception:
-        return str(obj)
+
+def safe_metrics(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: safe_num(v) for k, v in (d or {}).items()}
+
+def normalize_trades(df: pd.DataFrame, default_ticker: str) -> List[Dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    # Common aliases -> unified schema
+    alias = {
+        "Date": "date", "date": "date", "TradeDate": "date", "timestamp":"date",
+        "Ticker": "ticker", "Symbol": "ticker",
+        "Side": "side", "Action": "side", "Position": "side",
+        "Qty": "qty", "Quantity": "qty", "Size": "qty", "Units": "qty", "shares":"qty",
+        "OpenPx": "open", "Open": "open", "open_px": "open", "open_price":"open",
+        "ClosePx": "close", "Close": "close", "close_px":"close", "close_price":"close",
+        "PnL": "pnl", "PNL": "pnl", "pnl": "pnl", "PnL$":"pnl", "pnl_value":"pnl",
+    }
+    cols = {c: alias[c] for c in df.columns if c in alias}
+    t = df.rename(columns=cols).copy()
+
+    # Ensure required columns exist
+    for c in ["date", "ticker", "side", "qty", "open", "close", "pnl"]:
+        if c not in t.columns:
+            t[c] = np.nan
+
+    # Fill ticker if missing
+    t["ticker"] = t["ticker"].fillna(default_ticker)
+
+    # Dates -> ISO
+    t["date"] = pd.to_datetime(t["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # Numerics
+    for c in ["qty", "open", "close", "pnl"]:
+        t[c] = t[c].map(safe_num)
+
+    # Side text normalize
+    t["side"] = t["side"].astype(str).str.upper().str.replace("_", " ").str.strip()
+
+    # Output recent 200
+    out = t[["date", "ticker", "side", "qty", "open", "close", "pnl"]].tail(200)
+    return out.to_dict(orient="records")
 
 # ----------------------
 # Metrics helpers
@@ -299,7 +307,7 @@ def avg_dollar_vol(df: pd.DataFrame) -> float:
     return float((px * vol).rolling(20).mean().dropna().mean())
 
 def turnover(weights_df: pd.DataFrame) -> float:
-    if weights_df.empty:
+    if weights_df is None or weights_df.empty:
         return 0.0
     dw = weights_df.diff().abs().sum(axis=1)
     return float((0.5 * dw).mean())
@@ -341,16 +349,16 @@ def process_one(tic: str, start: str, end: str, req) -> Dict[str, Any]:
             [tic], {tic: df}, {tic: feat}, {tic: preds},
             sig_cfg, ex_cfg, port_cfg, exit_mode=req.exit_mode
         )
-        metrics = perf_metrics(eq)
+        metrics = safe_metrics(perf_metrics(eq))
         turo = turnover(weights)
 
         return {
             "ticker": tic,
             "status": "ok",
-            "CV_MSE": cv.get("CV_MSE"),
-            "CV_MAE": cv.get("CV_MAE"),
-            "CV_R2": cv.get("CV_R2"),
-            "IC": ic,
+            "CV_MSE": safe_num((cv or {}).get("CV_MSE")),
+            "CV_MAE": safe_num((cv or {}).get("CV_MAE")),
+            "CV_R2": safe_num((cv or {}).get("CV_R2")),
+            "IC": safe_num(ic),
             "Sharpe": metrics.get("Sharpe"),
             "Sortino": metrics.get("Sortino"),
             "CAGR": metrics.get("CAGR"),
@@ -358,9 +366,9 @@ def process_one(tic: str, start: str, end: str, req) -> Dict[str, Any]:
             "Calmar": metrics.get("Calmar"),
             "HitRate": metrics.get("HitRate"),
             "TotalReturn": metrics.get("TotalReturn"),
-            "Turnover": turo,
-            "Trades": int(len(trades)),
-            "avg_dollar_vol": float(adv),
+            "Turnover": safe_num(turo),
+            "Trades": int(len(trades or [])),
+            "avg_dollar_vol": safe_num(adv),
         }
     except Exception as e:
         return {"ticker": tic, "status": "error", "error": str(e)}
@@ -390,24 +398,17 @@ def rank_rows(rows: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
 # ----------------------
 @app.get("/health")
 def health():
-    return JSONResponse(content={"status": "ok"})
+    return {"status": "ok"}
 
 @app.post("/predict")
 def predict(req: PredictRequest):
-    """
-    Return next-day prediction (log return) and optional backtest summary.
-    Robust to empty/NaN predictions and cold starts (no NaT indexing).
-    """
-    # --- Load & build features (lighter settings for speed on /predict) ---
+    # --- Load & features ---
     df = load_data_cached(
         req.ticker, req.start, req.end,
         cache_dir=req.cache_dir, cache_hours=req.cache_hours
     )
+    feat = build_features(df, fft_window=128, fft_topk=3).dropna(subset=["target_next_logret"]).copy()
 
-    feat = build_features(df, fft_window=128, fft_topk=3)
-    feat = feat.dropna(subset=["target_next_logret"]).copy()
-
-    # If we can't make features/targets, return a graceful payload
     if feat.empty:
         payload = {
             "ticker": req.ticker,
@@ -417,20 +418,18 @@ def predict(req: PredictRequest):
             "recent_predictions": [],
             "note": "No sufficient feature/target rows after preprocessing."
         }
-        return JSONResponse(content=json_sanitize(payload))
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"}, media_type="application/json")
 
-    # --- Walk-forward train/predict (trimmed CV for responsiveness) ---
+    # --- CV predictions (shorter folds for latency) ---
     preds, cv = train_predict_walkforward(
         feat, model_name=req.model,
         train_min=252, test_size=21, step_size=21, embargo=0
     )
 
-    # --- Robust extraction of last prediction (avoid KeyError: NaT) ---
-    last_idx = preds.last_valid_index()  # None if all-NaN
+    last_idx = preds.last_valid_index()
     if last_idx is not None:
         try:
-            val = preds.loc[last_idx]
-            last_pred = float(val) if pd.notna(val) else None
+            last_pred = safe_num(preds.loc[last_idx])
             asof = last_idx.strftime("%Y-%m-%d") if hasattr(last_idx, "strftime") else str(last_idx)
         except Exception:
             last_pred, asof = None, None
@@ -441,10 +440,16 @@ def predict(req: PredictRequest):
         "ticker": req.ticker,
         "asof": asof,
         "next_day_pred_logret": last_pred,
-        "cv": cv,
+        "cv": {
+            "Model": req.model,
+            "Splits": (cv or {}).get("Splits"),
+            "CV_MSE": safe_num((cv or {}).get("CV_MSE")),
+            "CV_MAE": safe_num((cv or {}).get("CV_MAE")),
+            "CV_R2": safe_num((cv or {}).get("CV_R2")),
+        },
     }
 
-    # --- Optional backtest (uses same preds/features; safe if preds are NaN) ---
+    # --- Optional backtest ---
     if req.backtest:
         sig_cfg = SignalConfig(
             mode=req.exit_mode,
@@ -452,7 +457,7 @@ def predict(req: PredictRequest):
             threshold_short=req.threshold,
             allow_short=req.allow_short
         )
-        ex_cfg = ExecConfig()  # default bps costs
+        ex_cfg = ExecConfig()  # defaults
         port_cfg = PortfolioConfig(top_k=1, target_daily_risk=0.02)
 
         eq_df, trades_df, weights_df = backtest_multi(
@@ -465,20 +470,22 @@ def predict(req: PredictRequest):
             port_cfg=port_cfg,
             exit_mode=req.exit_mode
         )
-        metrics = perf_metrics(eq_df)
+        metrics = safe_metrics(perf_metrics(eq_df))
+        trades = normalize_trades(trades_df, default_ticker=req.ticker)
+
         result["backtest"] = {
             "metrics": metrics,
-            "trades": trades_df.tail(50).to_dict(orient="records")
+            "trades": trades
         }
 
-    # --- Recent predictions preview for UI/debugging ---
     preview = preds.dropna().tail(30)
     result["recent_predictions"] = [
-        {"date": (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)), "pred": float(v)}
+        {"date": (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)), "pred": safe_num(v)}
         for d, v in preview.items()
     ]
 
-    return JSONResponse(content=json_sanitize(result))
+    # Force JSON to be spec-compliant (no NaN/Inf)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"}, media_type="application/json")
 
 @app.post("/screen")
 def screen(req: ScreenRequest):
@@ -493,18 +500,14 @@ def screen(req: ScreenRequest):
             for fut in as_completed(futs):
                 rows.append(fut.result())
     ranking = rank_rows(rows, req.top_n)
-    return JSONResponse(content=json_sanitize({"results": rows, "ranking": ranking}))
+    return JSONResponse({"results": rows, "ranking": ranking}, headers={"Cache-Control":"no-store"})
 
 @app.post("/screen_universe")
 def screen_universe(req: ScreenUniverseRequest):
     tickers = get_universe(req.universe)
     if not tickers:
-        return JSONResponse(content=json_sanitize({
-            "results": [],
-            "ranking": [],
-            "error": f"Unknown or empty universe: {req.universe}"
-        }))
-    # Build a valid ScreenRequest (field names must match exactly)
+        return JSONResponse({"results": [], "ranking": [], "error": f"Unknown or empty universe: {req.universe}"},
+                            headers={"Cache-Control":"no-store"})
     subreq = ScreenRequest(
         tickers=tickers,
         start=req.start,
@@ -525,6 +528,4 @@ def screen_universe(req: ScreenUniverseRequest):
         cache_dir=req.cache_dir,
         cache_hours=req.cache_hours,
     )
-    # Reuse the /screen logic
-    resp = screen(subreq)  # returns a JSONResponse
-    return resp
+    return screen(subreq)
