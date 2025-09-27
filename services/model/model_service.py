@@ -239,7 +239,7 @@ class ScreenUniverseRequest(BaseModel):
     cache_hours: float = 20.0
 
 # ----------------------
-# Helpers: safe JSON
+# Helpers: JSON safety & trades normalization
 # ----------------------
 def safe_num(x):
     """Return a Python float or None (no NaN/inf)."""
@@ -249,21 +249,43 @@ def safe_num(x):
     except Exception:
         return None
 
+def json_safe(x):
+    if isinstance(x, float):
+        return float(x) if np.isfinite(x) else None
+    if isinstance(x, (np.floating,)):
+        xv = float(x)
+        return xv if np.isfinite(xv) else None
+    if isinstance(x, dict):
+        return {k: json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [json_safe(v) for v in x]
+    return x
+
 def safe_metrics(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: safe_num(v) for k, v in (d or {}).items()}
 
 def normalize_trades(df: pd.DataFrame, default_ticker: str) -> List[Dict[str, Any]]:
+    """Map various backtester column names into a stable schema the UI expects."""
     if df is None or df.empty:
         return []
-    # Common aliases -> unified schema
     alias = {
-        "Date": "date", "date": "date", "TradeDate": "date", "timestamp":"date",
+        "Date": "date", "date": "date", "TradeDate": "date", "timestamp": "date",
+
         "Ticker": "ticker", "Symbol": "ticker",
+
         "Side": "side", "Action": "side", "Position": "side",
-        "Qty": "qty", "Quantity": "qty", "Size": "qty", "Units": "qty", "shares":"qty",
-        "OpenPx": "open", "Open": "open", "open_px": "open", "open_price":"open",
-        "ClosePx": "close", "Close": "close", "close_px":"close", "close_price":"close",
-        "PnL": "pnl", "PNL": "pnl", "pnl": "pnl", "PnL$":"pnl", "pnl_value":"pnl",
+
+        "Qty": "qty", "Quantity": "qty", "Size": "qty", "Units": "qty", "shares": "qty",
+        "qty_weight": "qty",  # from portfolio-weight backtests
+
+        "OpenPx": "open", "Open": "open", "open_px": "open", "open_price": "open",
+        "entry_price": "open",
+
+        "ClosePx": "close", "Close": "close", "close_px": "close", "close_price": "close",
+        "exit_price": "close",
+
+        "PnL": "pnl", "PNL": "pnl", "pnl": "pnl", "PnL$": "pnl", "pnl_value": "pnl",
+        "pnl_weight": "pnl",
     }
     cols = {c: alias[c] for c in df.columns if c in alias}
     t = df.rename(columns=cols).copy()
@@ -286,7 +308,6 @@ def normalize_trades(df: pd.DataFrame, default_ticker: str) -> List[Dict[str, An
     # Side text normalize
     t["side"] = t["side"].astype(str).str.upper().str.replace("_", " ").str.strip()
 
-    # Output recent 200
     out = t[["date", "ticker", "side", "qty", "open", "close", "pnl"]].tail(200)
     return out.to_dict(orient="records")
 
@@ -318,14 +339,21 @@ def turnover(weights_df: pd.DataFrame) -> float:
 def process_one(tic: str, start: str, end: str, req) -> Dict[str, Any]:
     try:
         df = load_data_cached(tic, start, end, cache_dir=req.cache_dir, cache_hours=req.cache_hours)
+        if df is None or df.empty:
+            return {"ticker": tic, "status": "no_data"}
+
         years = (df.index[-1] - df.index[0]).days / 365.25
         if years < req.min_years:
             return {"ticker": tic, "status": "too_short", "years": years}
+
         adv = avg_dollar_vol(df)
         if not np.isfinite(adv) or adv < req.min_dollar_vol:
             return {"ticker": tic, "status": "illiquid", "avg_dollar_vol": adv, "years": years}
 
         feat = build_features(df).dropna(subset=["target_next_logret"]).copy()
+        if feat.empty:
+            return {"ticker": tic, "status": "no_features"}
+
         preds, cv = train_predict_walkforward(
             feat, model_name=req.model,
             train_min=504, test_size=63, step_size=63, embargo=0
@@ -375,6 +403,8 @@ def process_one(tic: str, start: str, end: str, req) -> Dict[str, Any]:
 
 def rank_rows(rows: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
     df = pd.DataFrame(rows)
+    if df.empty or "status" not in df.columns:
+        return []
     ok = df[df["status"] == "ok"].copy()
     if ok.empty:
         return []
@@ -407,7 +437,19 @@ def predict(req: PredictRequest):
         req.ticker, req.start, req.end,
         cache_dir=req.cache_dir, cache_hours=req.cache_hours
     )
-    feat = build_features(df, fft_window=128, fft_topk=3).dropna(subset=["target_next_logret"]).copy()
+    if df is None or df.empty:
+        payload = {
+            "ticker": req.ticker,
+            "asof": None,
+            "next_day_pred_logret": None,
+            "cv": {"Model": req.model, "Splits": 0, "CV_MSE": None, "CV_MAE": None, "CV_R2": None},
+            "recent_predictions": [],
+            "note": "No data returned for the selected range.",
+        }
+        return JSONResponse(json_safe(payload), headers={"Cache-Control": "no-store"})
+
+    feat = build_features(df, fft_window=128, fft_topk=3)
+    feat = feat.dropna(subset=["target_next_logret"]).copy()
 
     if feat.empty:
         payload = {
@@ -418,7 +460,7 @@ def predict(req: PredictRequest):
             "recent_predictions": [],
             "note": "No sufficient feature/target rows after preprocessing."
         }
-        return JSONResponse(payload, headers={"Cache-Control": "no-store"}, media_type="application/json")
+        return JSONResponse(json_safe(payload), headers={"Cache-Control": "no-store"})
 
     # --- CV predictions (shorter folds for latency) ---
     preds, cv = train_predict_walkforward(
@@ -484,8 +526,7 @@ def predict(req: PredictRequest):
         for d, v in preview.items()
     ]
 
-    # Force JSON to be spec-compliant (no NaN/Inf)
-    return JSONResponse(result, headers={"Cache-Control": "no-store"}, media_type="application/json")
+    return JSONResponse(json_safe(result), headers={"Cache-Control": "no-store"})
 
 @app.post("/screen")
 def screen(req: ScreenRequest):
@@ -499,15 +540,20 @@ def screen(req: ScreenRequest):
             futs = [ex.submit(process_one, *j) for j in jobs]
             for fut in as_completed(futs):
                 rows.append(fut.result())
+
     ranking = rank_rows(rows, req.top_n)
-    return JSONResponse({"results": rows, "ranking": ranking}, headers={"Cache-Control":"no-store"})
+    payload = {"results": rows, "ranking": ranking}
+    return JSONResponse(json_safe(payload), headers={"Cache-Control": "no-store"})
 
 @app.post("/screen_universe")
 def screen_universe(req: ScreenUniverseRequest):
     tickers = get_universe(req.universe)
     if not tickers:
-        return JSONResponse({"results": [], "ranking": [], "error": f"Unknown or empty universe: {req.universe}"},
-                            headers={"Cache-Control":"no-store"})
+        return JSONResponse(
+            json_safe({"results": [], "ranking": [], "error": f"Unknown or empty universe: {req.universe}"}),
+            headers={"Cache-Control": "no-store"},
+        )
+
     subreq = ScreenRequest(
         tickers=tickers,
         start=req.start,
@@ -528,4 +574,5 @@ def screen_universe(req: ScreenUniverseRequest):
         cache_dir=req.cache_dir,
         cache_hours=req.cache_hours,
     )
+    # Reuse the /screen logic
     return screen(subreq)
