@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Screener</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/css/model.css" />
+</head>
+<body>
+<main class="wrap">
+    <h1>Screener</h1>
+    <form id="sf" class="form">
+        <select id="universe">
+            <option value="sp500">S&P 500</option>
+            <option value="nasdaq100">Nasdaq 100</option>
+            <option value="dow30">Dow 30</option>
+        </select>
+        <input id="start" type="date" value="2019-01-01" />
+        <input id="end" type="date" />
+        <button>Screen</button>
+    </form>
+
+    <table id="tbl"><thead></thead><tbody></tbody></table>
+</main>
+<script type="module">
+    const $ = s => document.querySelector(s);
+    const fmt = (v) => (v==null?'':(typeof v==='number'? v.toFixed(4): String(v)));
+    const today = () => new Date().toISOString().slice(0,10);
+    $('#end').value = today();
+
+    const draw = (rows=[]) => {
+        const thead = $('#tbl thead');
+        const tbody = $('#tbl tbody');
+        if (!rows.length) { thead.innerHTML=''; tbody.innerHTML=''; return; }
+        const cols = Object.keys(rows[0]);
+        thead.innerHTML = `<tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+        tbody.innerHTML = rows.map(r => `<tr>${
+            cols.map(c => {
+                if (c.toLowerCase()==='ticker') {
+                    const t = r[c];
+                    return `<td><a href="/model.html?ticker=${t}">${t}</a></td>`;
+                }
+                return `<td>${fmt(r[c])}</td>`;
+            }).join('')
+        }</tr>`).join('');
+    };
+
+    async function screen(){
+        const body = {
+            universe: $('#universe').value,
+            start: $('#start').value,
+            end: $('#end').value,
+            top_n: 50,
+            model: 'hgb',
+            threshold: 0.0015,
+            allow_short: true
+        };
+        const r = await fetch('/api/model/screen/universe', {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify(body)
+        });
+        if(!r.ok) throw new Error('screen failed');
+        const json = await r.json();
+        // try common shapes: {rankings:[...]} or array itself
+        const rows = Array.isArray(json) ? json : (json.rankings || json.results || []);
+        draw(rows);
+    }
+
+    $('#sf').addEventListener('submit', (e)=>{ e.preventDefault(); screen().catch(err=>alert(err.message)); });
+</script>
+</body>
+</html>

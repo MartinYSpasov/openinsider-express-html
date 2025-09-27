@@ -150,8 +150,12 @@ async function loadClusters() {
 
 /* ========= trades ========= */
 let tradesCache = [];
-let sortPctAsc = true;
 let lastTradesSig = '';
+
+// Sort state: default to Date (newest first)
+let sortKey = 'date';     // 'date' | 'pct'
+let sortDateAsc = false;  // false => newest first
+let sortPctAsc = true;    // existing toggle for % vs Buy
 
 function scoreBadge(score) {
     const n = Number(score);
@@ -197,6 +201,8 @@ Liquidity: ${safeNum0(bd.liquidity)}`
       </td>
       <td>
         <button class="btn" onclick="loadSummary('${t.ticker}')">AI Summary</button>
+        <button class="btn btn-secondary" onclick="predictTicker('${t.ticker}')">Predict</button>
+
       </td>
     </tr>
   `;
@@ -209,13 +215,19 @@ function renderTrades(prices, scores) {
     let trades = Array.isArray(tradesCache) ? [...tradesCache] : [];
 
     trades.sort((a, b) => {
+        if (sortKey === 'date') {
+            const da = new Date(a.filing_date).getTime() || 0;
+            const db = new Date(b.filing_date).getTime() || 0;
+            return sortDateAsc ? (da - db) : (db - da); // asc vs desc
+        }
+        // else: % vs Buy
         const currA = prices[a.ticker], buyA = Number(a.price);
         const pctA = (Number.isFinite(currA) && Number.isFinite(buyA) && buyA > 0) ? ((currA - buyA)/buyA)*100 : -Infinity;
 
         const currB = prices[b.ticker], buyB = Number(b.price);
         const pctB = (Number.isFinite(currB) && Number.isFinite(buyB) && buyB > 0) ? ((currB - buyB)/buyB)*100 : -Infinity;
 
-        return sortPctAsc ? pctA - pctB : pctB - pctA;
+        return sortPctAsc ? (pctA - pctB) : (pctB - pctA);
     });
 
     tbody.innerHTML = trades.map(t => renderTradeRow(t, prices, scores)).join('');
@@ -246,7 +258,9 @@ async function loadTrades() {
 }
 
 /* ========= interactions ========= */
+// Keep your existing % vs Buy sorter, but mark we're sorting by pct when clicked
 $('sort-pct')?.addEventListener('click', async () => {
+    sortKey = 'pct';
     sortPctAsc = !sortPctAsc;
     try {
         const tickers = tradesCache.map(r => r.ticker);
@@ -364,13 +378,76 @@ $('minBuy')?.addEventListener('keydown', (e) => {
     }
 });
 
+async function predictTicker(ticker) {
+    try {
+        setStatus(`Predicting ${ticker}...`);
+        const url = `/api/model/predict/${encodeURIComponent(ticker)}?start=2016-01-01&end=${new Date().toISOString().slice(0,10)}&backtest=true`;
+        const r = await fetch(url, { cache: 'no-store' });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j?.error || 'Predict failed');
+
+        const p = j.next_day_pred_logret;
+        const m = j.backtest?.metrics || {};
+        alert(
+            `Ticker: ${j.ticker}\nAs of: ${j.asof}\nNext-day predicted log return: ${p == null ? 'n/a' : p.toFixed(5)}\n` +
+            `Sharpe: ${m.Sharpe?.toFixed?.(2) ?? 'n/a'}  CAGR: ${m.CAGR?.toFixed?.(2) ?? 'n/a'}  MaxDD: ${m.MaxDD?.toFixed?.(2) ?? 'n/a'}`
+        );
+        setStatus(`Prediction ready for ${ticker}`);
+    } catch (e) {
+        console.error(e);
+        setStatus(`Prediction failed: ${e.message}`, true);
+        alert(`Prediction failed: ${e.message}`);
+    }
+}
+
+async function runScreen() {
+    const universe = document.getElementById('screenUniverse').value;
+    const top_n = Number(document.getElementById('screenTopN').value || 20);
+    setStatus(`Screening ${universe}...`);
+    try {
+        const payload = {
+            universe,
+            start: '2016-01-01',
+            end: new Date().toISOString().slice(0,10),
+            top_n
+        };
+        const res = await fetch('/api/model/screen/universe', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j?.error || 'Screen failed');
+        renderScreenResults(j.ranking || []);
+        setStatus(`Screen complete: ${universe}`);
+    } catch (e) {
+        console.error(e);
+        setStatus(`Screen failed: ${e.message}`, true);
+    }
+}
+
+function renderScreenResults(rows) {
+    const el = document.getElementById('screenResults');
+    if (!rows?.length) { el.innerHTML = '<p>No results.</p>'; return; }
+    const th = `<tr>
+    <th>#</th><th>Ticker</th><th>Score</th><th>Sharpe</th><th>CAGR</th><th>IC</th><th>Turnover</th><th>Trades</th>
+  </tr>`;
+    const trs = rows.map((r,i)=>`<tr>
+    <td>${i+1}</td>
+    <td><strong>${r.ticker}</strong></td>
+    <td>${r.Score?.toFixed?.(2) ?? '-'}</td>
+    <td>${r.Sharpe?.toFixed?.(2) ?? '-'}</td>
+    <td>${r.CAGR?.toFixed?.(2) ?? '-'}</td>
+    <td>${r.IC?.toFixed?.(2) ?? '-'}</td>
+    <td>${r.Turnover?.toFixed?.(3) ?? '-'}</td>
+    <td>${r.Trades ?? '-'}</td>
+  </tr>`).join('');
+    el.innerHTML = `<table class="table">${th}${trs}</table>`;
+}
+
+
 /* ========= initial load ========= */
 (async () => {
     await loadClusters();
-    await loadTrades();
+    await loadTrades();       // default render will be sorted by Date (newest first)
 })();
-
-
-fetch('/api/trades?minBuy='   + minBuy + '&_=' + Date.now(), { cache: 'no-store' })
-fetch('/api/clusters?minBuy=' + minBuy + '&_=' + Date.now(), { cache: 'no-store' })
-fetch('/api/trigger?minBuy='  + minBuy + '&_=' + Date.now(), { cache: 'no-store' })

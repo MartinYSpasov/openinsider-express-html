@@ -1,4 +1,5 @@
-version: "3.9"
+# docker-compose.yml
+# Note: no "version" key (it's deprecated in recent Compose)
 services:
   db:
     image: postgres:16
@@ -16,14 +17,43 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  model:
+    build:
+      context: ./services/model
+      dockerfile: Dockerfile
+    image: openinsider-model:latest
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - model-cache:/app/.cache
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).getcode()==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   app:
     build: ./server
     env_file: .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      model:
+        condition: service_healthy
     ports:
       - "4000:4000"
+    environment:
+      - PY_MODEL_URL=http://model:8000
+      - MODEL_TIMEOUT_MS=120000
+      - MODEL_TIMEOUT_MS_PREDICT=90000
+      - MODEL_TIMEOUT_MS_SCREEN=180000
+      - MODEL_RETRIES=0
+    restart: unless-stopped
 
   pgadmin:
     image: dpage/pgadmin4
@@ -33,6 +63,10 @@ services:
     ports:
       - "5050:80"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   dbdata:
+  model-cache:
