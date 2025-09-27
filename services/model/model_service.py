@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 import pandas as pd
@@ -238,6 +239,50 @@ class ScreenUniverseRequest(BaseModel):
     cache_hours: float = 20.0
 
 # ----------------------
+# JSON sanitization (avoid NaN/Inf in responses)
+# ----------------------
+def _is_finite_number(x) -> bool:
+    try:
+        return np.isfinite(float(x))
+    except Exception:
+        return False
+
+def _to_iso_date(x):
+    try:
+        return pd.Timestamp(x).strftime("%Y-%m-%d")
+    except Exception:
+        return str(x)
+
+def json_sanitize(obj):
+    """Recursively make objects JSON-safe for Starlette (no NaN/Inf)."""
+    if obj is None:
+        return None
+    if isinstance(obj, (bool, str)):
+        return obj
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (int,)):
+        return obj
+    if isinstance(obj, (np.floating, float)):
+        return float(obj) if _is_finite_number(obj) else None
+    if isinstance(obj, (pd.Timestamp, np.datetime64)):
+        return _to_iso_date(obj)
+    if isinstance(obj, pd.Series):
+        if isinstance(obj.index, pd.DatetimeIndex):
+            return [{"date": _to_iso_date(ix), "value": json_sanitize(val)} for ix, val in obj.items()]
+        return json_sanitize(obj.to_dict())
+    if isinstance(obj, pd.DataFrame):
+        return [json_sanitize(rec) for rec in obj.to_dict(orient="records")]
+    if isinstance(obj, dict):
+        return {str(k): json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_sanitize(v) for v in obj]
+    try:
+        return float(obj) if _is_finite_number(obj) else str(obj)
+    except Exception:
+        return str(obj)
+
+# ----------------------
 # Metrics helpers
 # ----------------------
 def info_coeff(y_true: pd.Series, y_pred: pd.Series) -> float:
@@ -345,7 +390,7 @@ def rank_rows(rows: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
 # ----------------------
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return JSONResponse(content={"status": "ok"})
 
 @app.post("/predict")
 def predict(req: PredictRequest):
@@ -364,7 +409,7 @@ def predict(req: PredictRequest):
 
     # If we can't make features/targets, return a graceful payload
     if feat.empty:
-        return {
+        payload = {
             "ticker": req.ticker,
             "asof": None,
             "next_day_pred_logret": None,
@@ -372,6 +417,7 @@ def predict(req: PredictRequest):
             "recent_predictions": [],
             "note": "No sufficient feature/target rows after preprocessing."
         }
+        return JSONResponse(content=json_sanitize(payload))
 
     # --- Walk-forward train/predict (trimmed CV for responsiveness) ---
     preds, cv = train_predict_walkforward(
@@ -432,7 +478,7 @@ def predict(req: PredictRequest):
         for d, v in preview.items()
     ]
 
-    return result
+    return JSONResponse(content=json_sanitize(result))
 
 @app.post("/screen")
 def screen(req: ScreenRequest):
@@ -447,14 +493,17 @@ def screen(req: ScreenRequest):
             for fut in as_completed(futs):
                 rows.append(fut.result())
     ranking = rank_rows(rows, req.top_n)
-    return {"results": rows, "ranking": ranking}
+    return JSONResponse(content=json_sanitize({"results": rows, "ranking": ranking}))
 
 @app.post("/screen_universe")
 def screen_universe(req: ScreenUniverseRequest):
     tickers = get_universe(req.universe)
     if not tickers:
-        return {"results": [], "ranking": [], "error": f"Unknown or empty universe: {req.universe}"}
-
+        return JSONResponse(content=json_sanitize({
+            "results": [],
+            "ranking": [],
+            "error": f"Unknown or empty universe: {req.universe}"
+        }))
     # Build a valid ScreenRequest (field names must match exactly)
     subreq = ScreenRequest(
         tickers=tickers,
@@ -476,4 +525,6 @@ def screen_universe(req: ScreenUniverseRequest):
         cache_dir=req.cache_dir,
         cache_hours=req.cache_hours,
     )
-    return screen(subreq)
+    # Reuse the /screen logic
+    resp = screen(subreq)  # returns a JSONResponse
+    return resp

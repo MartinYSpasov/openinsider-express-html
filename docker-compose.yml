@@ -28,14 +28,17 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - model-cache:/app/.cache
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).getcode()==200 else 1)"]
-      interval: 15s
+      test: ["CMD-SHELL", "python -c \"import json,sys,urllib.request; \
+d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)); \
+sys.exit(0 if d.get('status')=='ok' else 1)\""]
+      interval: 20s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 25s
+    restart: unless-stopped
 
   app:
     build: ./server

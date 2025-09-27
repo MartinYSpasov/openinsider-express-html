@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Predictions • Insider Dash</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        /* ----- page-scoped polish ----- */
+        .card { background: rgba(8,12,18,.7); border:1px solid #1b2634; border-radius:14px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+        .kpi-bar { display:grid; gap:12px; grid-template-columns: repeat(5, minmax(140px, 1fr)); }
+        .kpi { background:#0b1119; border:1px solid #1b2634; border-radius:12px; padding:14px; }
+        .kpi .label { color:#9fb0c3; font-size:12px; margin-bottom:4px; }
+        .kpi .value { font-weight:800; font-size:22px; letter-spacing:.2px; }
+
+        /* --- RUN PREDICTION grid --- */
+        .form-run {
+            display:grid;
+            grid-template-columns: 140px 180px 180px 160px 180px 160px; /* Ticker | Start | End | Model | Threshold | Exit */
+            gap: 12px 16px;
+            align-items: end; /* all inputs align on their bottoms */
+        }
+        .field label { display:block; font-size:12px; color:#9fb0c3; margin-bottom:6px; }
+        .field .sub { display:block; font-size:11px; color:#6f8196; margin-top:4px; }
+        .field.checks { grid-column: 1 / span 3; display:flex; gap:18px; align-items:center; padding-top:2px; }
+        .field.actions { grid-column: 5 / span 2; justify-self:start; display:flex; align-items:center; gap:10px; }
+        .status { color:#9fb0c3; font-size:12px; }
+
+        /* inputs normalize height so bottoms line up */
+        .input, select.input, input[type="date"].input, input[type="number"].input { height:36px; line-height:36px; }
+
+        @media (max-width: 1024px) {
+            .kpi-bar { grid-template-columns: repeat(2, 1fr); }
+            .form-run { grid-template-columns: 1fr 1fr; }
+            .field.checks { grid-column: 1 / -1; }
+            .field.actions { grid-column: 1 / -1; justify-self: start; }
+        }
+
+        canvas { background:#0b1119; border:1px solid #1b2634; border-radius:12px; }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="title">
+            <span class="badge">MODEL</span>
+            <h1>Stock Predictions</h1>
+            <div class="hint">ARIMA + Fourier + TA with walk-forward cross-validation</div>
+        </div>
+        <div class="controls">
+            <a href="/" class="btn" style="text-decoration:none">← Back</a>
+        </div>
+    </div>
+
+    <!-- Form -->
+    <div class="section" style="margin-top:4px;">
+        <h2>Run Prediction</h2>
+        <span class="hint">Pick a symbol and date range (≥ 3 years recommended)</span>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+        <div class="form-run">
+            <div class="field">
+                <label for="ticker">Ticker (symbol)</label>
+                <input id="ticker" class="input" type="text" value="AAPL" placeholder="AAPL, MSFT, NVDA" title="Exchange symbol, e.g. AAPL" />
+                <span class="sub">Example: AAPL</span>
+            </div>
+
+            <div class="field">
+                <label for="start">Start date</label>
+                <input id="start" class="input" type="date" title="First day of price history to use" />
+                <span class="sub">Use ≥ 3y history</span>
+            </div>
+
+            <div class="field">
+                <label for="end">End date</label>
+                <input id="end" class="input" type="date" title="Last day of price history to use" />
+                <span class="sub">Defaults to today</span>
+            </div>
+
+            <div class="field">
+                <label for="model">Forecast model</label>
+                <select id="model" class="input" title="Which forecaster to use">
+                    <option value="hgb" selected>HGB (tree ensemble)</option>
+                    <option value="mlp">MLP (neural net)</option>
+                    <option value="linear">Linear</option>
+                </select>
+                <span class="sub">Try HGB first</span>
+            </div>
+
+            <div class="field">
+                <label for="threshold">Trade threshold (log-return)</label>
+                <input id="threshold" class="input" type="number" step="0.0001" value="0.0015"
+                       title="Only trade when predicted next-day log-return ≥ +threshold (long) or ≤ −threshold (short). 0.0015 ≈ 0.15%." />
+                <span class="sub">0.0015 ≈ 0.15%</span>
+            </div>
+
+            <div class="field">
+                <label for="exitMode">Exit rule</label>
+                <select id="exitMode" class="input" title="How long to hold">
+                    <option value="oneday" selected>One day</option>
+                    <option value="swing">Swing (rule-based)</option>
+                </select>
+                <span class="sub">Holding period</span>
+            </div>
+
+            <div class="field checks">
+                <label class="hint" title="Simulate trades on the chosen period">
+                    <input id="backtest" type="checkbox" checked> Backtest
+                </label>
+                <label class="hint" title="Allow short positions when prediction is negative beyond the threshold">
+                    <input id="allowShort" type="checkbox" checked> Allow short selling
+                </label>
+            </div>
+
+            <div class="field actions">
+                <button id="runBtn" class="btn">Run Prediction</button>
+                <span id="status" class="status"></span>
+            </div>
+
+            <div style="grid-column:1/-1" class="hint">
+                Tip: implied % move = <code>expm1(predicted_log_return)</code>.
+            </div>
+        </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="section"><h2>Summary</h2></div>
+    <div class="card" style="margin-bottom:16px;">
+        <div class="kpi-bar">
+            <div class="kpi"><div class="label">As of</div><div id="k_asof" class="value">—</div></div>
+            <div class="kpi"><div class="label">Next-day (log-ret)</div><div id="k_pred" class="value">—</div></div>
+            <div class="kpi"><div class="label">Implied %</div><div id="k_pred_pct" class="value">—</div></div>
+            <div class="kpi"><div class="label">CV MAE</div><div id="k_mae" class="value">—</div></div>
+            <div class="kpi"><div class="label">CV R²</div><div id="k_r2" class="value">—</div></div>
+        </div>
+        <div id="note" class="hint" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Chart -->
+    <div class="section"><h2>Recent Predictions</h2></div>
+    <div class="card">
+        <canvas id="predChart" height="160"></canvas>
+    </div>
+
+    <!-- Backtest -->
+    <div id="btSection" class="section" style="display:none;"><h2>Backtest</h2></div>
+    <div id="btWrap" class="card" style="display:none; margin-top:12px;">
+        <div id="metricsKpi" class="kpi-bar" style="grid-template-columns: repeat(7, minmax(140px, 1fr));"></div>
+        <div style="overflow:auto; max-height:420px; margin-top:10px;">
+            <table id="tradesTable">
+                <thead><tr>
+                    <th>Date</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Open</th><th>Close</th><th>PnL</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div style="height:24px"></div>
+</div>
+
+<script>
+    (function(){
+        const $ = s => document.querySelector(s);
+        const fmtPct = (x) => (x==null || Number.isNaN(x)) ? '—' : (x*100).toFixed(2) + '%';
+        const fmt4  = (x) => (x==null || Number.isNaN(x)) ? '—' : Number(x).toFixed(4);
+        const fmt2  = (x) => (x==null || Number.isNaN(x)) ? '—' : Number(x).toFixed(2);
+
+        function today(){ return new Date().toISOString().slice(0,10); }
+        function threeYearsAgo(){ const d = new Date(); d.setFullYear(d.getFullYear()-3); return d.toISOString().slice(0,10); }
+
+        function presetFromURL(){
+            const q = new URLSearchParams(location.search);
+            if (q.get('ticker')) $('#ticker').value = q.get('ticker').toUpperCase();
+            $('#start').value = q.get('start') || threeYearsAgo();
+            $('#end').value   = q.get('end')   || today();
+            if (q.get('model')) $('#model').value = q.get('model');
+            if (q.get('threshold')) $('#threshold').value = q.get('threshold');
+            if (q.get('exit_mode')) $('#exitMode').value = q.get('exit_mode');
+            if (q.get('allow_short')) $('#allowShort').checked = (q.get('allow_short') === 'true');
+            if (q.get('backtest')) $('#backtest').checked = (q.get('backtest') === 'true');
+            return q.get('autorun') === '1';
+        }
+
+        async function apiPredict(params){
+            const { ticker, start, end, backtest, model, threshold, allow_short, exit_mode } = params;
+            const qs = new URLSearchParams({
+                start, end,
+                backtest: String(!!backtest),
+                model,
+                threshold: String(threshold),
+                allow_short: String(!!allow_short),
+                exit_mode
+            });
+            const res = await fetch(`/api/model/predict/${encodeURIComponent(ticker)}?` + qs.toString());
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        }
+
+        function chartColors(){
+            const grid = '#1b2634';
+            const tick = '#9fb0c3';
+            const line = '#58b0ff';
+            return { grid, tick, line };
+        }
+
+        let chart;
+        function renderChart(points){
+            const ctx = $('#predChart').getContext('2d');
+            const labels = points.map(p=>p.date);
+            const data   = points.map(p=>p.pred);
+            const { grid, tick, line } = chartColors();
+
+            const gradient = ctx.createLinearGradient(0,0,0,160);
+            gradient.addColorStop(0, 'rgba(88,176,255,0.35)');
+            gradient.addColorStop(1, 'rgba(88,176,255,0.03)');
+
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label:'Predicted log-returns',
+                        data,
+                        borderColor: line,
+                        backgroundColor: gradient,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        borderWidth: 2,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive:true,
+                    maintainAspectRatio:false,
+                    scales:{
+                        x:{ grid:{ color:grid }, ticks:{ color:tick, maxRotation:0 } },
+                        y:{ grid:{ color:grid }, ticks:{ color:tick } }
+                    },
+                    plugins:{ legend:{ labels:{ color:tick } } }
+                }
+            });
+        }
+
+        async function run(){
+            const btn = $('#runBtn'); btn.disabled = true;
+            $('#status').textContent = 'running…';
+            $('#note').textContent = '';
+            $('#btSection').style.display = 'none';
+            $('#btWrap').style.display = 'none';
+
+            try{
+                const payload = {
+                    ticker: $('#ticker').value.trim().toUpperCase(),
+                    start:  $('#start').value,
+                    end:    $('#end').value,
+                    backtest: $('#backtest').checked,
+                    model:  $('#model').value,
+                    threshold: Number($('#threshold').value),
+                    allow_short: $('#allowShort').checked,
+                    exit_mode: $('#exitMode').value
+                };
+                const r = await apiPredict(payload);
+
+                $('#k_asof').textContent = r.asof || '—';
+                $('#k_pred').textContent = fmt4(r.next_day_pred_logret);
+                const pct = (r.next_day_pred_logret==null) ? null : Math.expm1(r.next_day_pred_logret);
+                $('#k_pred_pct').textContent = fmtPct(pct);
+                const cv = r.cv || {};
+                $('#k_mae').textContent = fmt4(cv.CV_MAE);
+                $('#k_r2').textContent  = fmt4(cv.CV_R2);
+                if (r.note) $('#note').textContent = r.note;
+
+                renderChart(r.recent_predictions || []);
+
+                if (payload.backtest && r.backtest && r.backtest.metrics){
+                    $('#btSection').style.display = '';
+                    $('#btWrap').style.display = '';
+                    const M = r.backtest.metrics || {};
+                    const kpi = [
+                        ['Sharpe', M.Sharpe], ['Sortino', M.Sortino], ['CAGR', M.CAGR],
+                        ['MaxDD', M.MaxDD], ['Calmar', M.Calmar], ['HitRate', M.HitRate],
+                        ['TotalReturn', M.TotalReturn]
+                    ];
+                    $('#metricsKpi').innerHTML = kpi.map(([k,v])=>`
+          <div class="kpi"><div class="label">${k}</div><div class="value">${fmt2(v)}</div></div>
+        `).join('');
+
+                    const tbody = $('#tradesTable tbody');
+                    const rows = (r.backtest.trades || []).map(t => `
+          <tr>
+            <td>${t.date || t.Date || ''}</td>
+            <td>${t.ticker || t.Ticker || payload.ticker}</td>
+            <td>${t.side || t.Side || ''}</td>
+            <td>${t.qty || t.Qty || ''}</td>
+            <td>${fmt2(t.open_px ?? t.OpenPx ?? t.open_price ?? t.open)}</td>
+            <td>${fmt2(t.close_px ?? t.ClosePx ?? t.close_price ?? t.close)}</td>
+            <td>${fmt2(t.pnl ?? t.PnL ?? t.pnl_pct)}</td>
+          </tr>
+        `).join('');
+                    tbody.innerHTML = rows;
+                }
+
+                $('#status').textContent = 'done';
+            }catch(e){
+                console.error(e);
+                $('#status').textContent = 'error';
+                alert('Prediction failed: ' + (e?.message || e));
+            }finally{
+                btn.disabled = false;
+            }
+        }
+
+        const auto = presetFromURL();
+        if (!$('#start').value) $('#start').value = threeYearsAgo();
+        if (!$('#end').value)   $('#end').value   = today();
+        document.getElementById('runBtn').addEventListener('click', run);
+        if (auto) run();
+    })();
+</script>
+</body>
+</html>
