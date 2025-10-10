@@ -435,37 +435,6 @@ async function predictTicker(ticker) {
 }
 window.predictTicker = predictTicker; // ensure onclick works
 
-async function runScreen() {
-    const uniSel = $("screenUniverse");
-    const nSel   = $("screenTopN");
-    if (!uniSel || !nSel) return; // not on this page
-
-    const universe = uniSel.value;
-    const top_n    = Number(nSel.value || 20);
-    setStatus(`Screening ${universe}...`);
-    try {
-        const payload = {
-            universe,
-            start: "2016-01-01",
-            end: new Date().toISOString().slice(0,10),
-            top_n
-        };
-        const res = await fetch("/api/model/screen/universe", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(j?.error || "Screen failed");
-        renderScreenResults(j.ranking || []);
-        setStatus(`Screen complete: ${universe}`);
-    } catch (e) {
-        console.error(e);
-        setStatus(`Screen failed: ${e.message}`, true);
-    }
-}
-window.runScreen = runScreen; // ensure onclick works
-
 function renderScreenResults(rows) {
     const el = $("screenResults");
     if (!el) return;

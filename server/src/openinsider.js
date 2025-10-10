@@ -9,7 +9,7 @@ const dollarsToVl = usd => Math.max(0, Math.floor((Number(usd) || 0) / 1000)); /
 
 export function buildScreenerUrl(page = 1, minBuyUSD = DEFAULT_MIN_BUY_USD, days = DAYS) {
     const vl = dollarsToVl(minBuyUSD);
-    return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=${days}&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
+    return `http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=${days}&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=${vl}&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&isceo=1&iscfo=1&isdirector=1&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=100&page=${page}`;
 }
 
 export async function fetchScreenerPage(url) {

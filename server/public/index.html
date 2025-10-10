@@ -57,7 +57,7 @@
                 <th class="num">Shares</th>
                 <th class="num">Value</th>
                 <th class="num">Current</th>
-                <th class="num sortable" id="sort-pct">% vs Buy ▲▼</th>
+                <th class="nuclustem sortable" id="sort-pct">% vs Buy ▲▼</th>
                 <th class="num">Score</th>
                 <th>Links</th>
                 <th>Actions</th>
@@ -69,22 +69,6 @@
 
     <div style="height:24px"></div>
 </div>
-
-<section class="panel">
-    <h2>Model Screener</h2>
-    <div class="row">
-        <label>Universe:</label>
-        <select id="screenUniverse">
-            <option value="sp500">S&P 500</option>
-            <option value="nasdaq100">Nasdaq 100</option>
-            <option value="dow30">Dow 30</option>
-        </select>
-        <label>Top N:</label>
-        <input id="screenTopN" type="number" value="20" min="1" max="200" />
-        <button class="btn" onclick="runScreen()">Run Screener</button>
-    </div>
-    <div id="screenResults"></div>
-</section>
 
 
 <script src="app.js"></script>
