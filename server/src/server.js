@@ -194,9 +194,13 @@ app.get('/api/ohlc/:ticker', async (req, res) => {
 app.get('/api/model/predict/:ticker', async (req, res) => {
     try {
         const ticker = req.params.ticker.toUpperCase();
-        const start = String(req.query.start ?? '2016-01-01');
+
+        // Default to last 2 years for speed (not 10 years)
+        const defaultStart = new Date(Date.now() - 730*24*60*60*1000).toISOString().slice(0, 10);
+        const start = String(req.query.start ?? defaultStart);
         const end = String(req.query.end ?? new Date().toISOString().slice(0, 10));
 
+        // Default backtest OFF for quick predictions
         const backtest = String(req.query.backtest ?? 'false').toLowerCase() === 'true';
         const model = String(req.query.model ?? 'hgb');
         const threshold = Number(req.query.threshold ?? 0.0015);
