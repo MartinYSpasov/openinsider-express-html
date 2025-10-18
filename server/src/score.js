@@ -1,11 +1,12 @@
-// src/score.js
+// src/score.js - Enhanced insider scoring with technical indicators
+
 export async function scoreTicker(pool, ticker) {
-    // recent insider purchases (60d)
+    // Recent insider purchases (90d for better signal)
     const { rows: trades } = await pool.query(
-        `SELECT insider_name, value_usd, price, shares, filing_date
+        `SELECT insider_name, insider_title, value_usd, price, shares, filing_date, trade_date
        FROM trades
       WHERE ticker = $1
-        AND filing_date >= NOW() - INTERVAL '60 days'
+        AND filing_date >= NOW() - INTERVAL '90 days'
         AND transaction ILIKE '%purchase%'
       ORDER BY filing_date DESC
       LIMIT 1000`,
@@ -16,12 +17,34 @@ export async function scoreTicker(pool, ticker) {
         return { ticker, score: null, breakdown: null };
     }
 
+    // === 1. INSIDER QUALITY & CONSISTENCY ===
     const distinctInsiders = new Set(trades.map(t => t.insider_name)).size;
     const totalValue = trades.reduce((s, t) => s + Number(t.value_usd || 0), 0);
 
-    // latest cluster for this ticker (optional)
+    // Bonus for C-suite (CEO/CFO/COO)
+    const cSuiteCount = trades.filter(t =>
+        /\b(ceo|chief executive|cfo|chief financial|coo|chief operating)\b/i.test(t.insider_title || '')
+    ).length;
+    const cSuiteBonus = Math.min(cSuiteCount * 5, 20);
+
+    // Consistency: purchases spread over time (not all same day) = stronger signal
+    const uniqueDates = new Set(trades.map(t =>
+        (t.filing_date || t.trade_date)?.toISOString().slice(0, 10)
+    )).size;
+    const consistencyBonus = Math.min((uniqueDates - 1) * 3, 15);
+
+    const baseInsiderScore =
+        distinctInsiders >= 5 ? 95 :
+        distinctInsiders === 4 ? 88 :
+        distinctInsiders === 3 ? 80 :
+        distinctInsiders === 2 ? 65 :
+        50;
+
+    const insiderScore = Math.min(baseInsiderScore + cSuiteBonus + consistencyBonus, 100);
+
+    // === 2. CLUSTER STRENGTH ===
     const { rows: cRows } = await pool.query(
-        `SELECT insider_count, total_value_usd, window_end
+        `SELECT insider_count, total_value_usd, window_end, trade_count
        FROM clusters
       WHERE ticker = $1
       ORDER BY window_end DESC
@@ -30,46 +53,83 @@ export async function scoreTicker(pool, ticker) {
     );
     const latestCluster = cRows[0] || null;
 
-    // --- subscores 0..100 (simple, defendable) ---
-    const insiderScore =
-        distinctInsiders >= 5 ? 98 :
-            distinctInsiders === 4 ? 95 :
-                distinctInsiders === 3 ? 88 :
-                    distinctInsiders === 2 ? 75 :
-                        distinctInsiders === 1 ? 60 : 40;
-
     const clusterTotal = Number(latestCluster?.total_value_usd || totalValue);
-    const clusterScore =
-        clusterTotal >= 5_000_000 ? 100 :
-            clusterTotal >= 2_000_000 ? 85 + (clusterTotal - 2_000_000) * (15 / 3_000_000) :
-                clusterTotal >=   500_000 ? 60 + (clusterTotal -   500_000) * (25 / 1_500_000) :
-                    40 + (clusterTotal) * (20 / 500_000);
+    const clusterDensity = latestCluster ? latestCluster.trade_count / latestCluster.insider_count : 1;
+    const densityBonus = clusterDensity > 2 ? 10 : clusterDensity > 1.5 ? 5 : 0;
 
-    const valuationScore = 50; // neutral for now (can wire in price later)
-    const momentumScore  = 50; // neutral
-    const liquidityScore =
-        totalValue >= 3_000_000 ? 90 :
-            totalValue >= 1_000_000 ? 75 + (totalValue - 1_000_000) * (15 / 2_000_000) :
-                totalValue >=   250_000 ? 55 + (totalValue -   250_000) * (20 / 750_000) :
-                    40 + (totalValue) * (15 / 250_000);
+    const baseClusterScore =
+        clusterTotal >= 10_000_000 ? 100 :
+        clusterTotal >= 5_000_000 ? 90 + (clusterTotal - 5_000_000) * (10 / 5_000_000) :
+        clusterTotal >= 2_000_000 ? 75 + (clusterTotal - 2_000_000) * (15 / 3_000_000) :
+        clusterTotal >= 500_000 ? 50 + (clusterTotal - 500_000) * (25 / 1_500_000) :
+        30 + (clusterTotal) * (20 / 500_000);
 
-    const weights = { insider: 0.30, cluster: 0.35, valuation: 0.25, momentum: 0.05, liquidity: 0.05 };
+    const clusterScore = Math.min(baseClusterScore + densityBonus, 100);
+
+    // === 3. TIMING (Recency) ===
+    const mostRecentMs = Math.max(...trades.map(t =>
+        new Date(t.filing_date || t.trade_date || 0).getTime()
+    ));
+    const daysSinceLast = (Date.now() - mostRecentMs) / (1000 * 60 * 60 * 24);
+
+    const timingScore =
+        daysSinceLast <= 7 ? 95 :
+        daysSinceLast <= 14 ? 85 :
+        daysSinceLast <= 30 ? 70 :
+        daysSinceLast <= 60 ? 50 :
+        30;
+
+    // === 4. SIZE (avg dollars per insider) ===
+    const avgPerInsider = totalValue / distinctInsiders;
+    const sizeScore =
+        avgPerInsider >= 2_000_000 ? 95 :
+        avgPerInsider >= 1_000_000 ? 80 + (avgPerInsider - 1_000_000) * (15 / 1_000_000) :
+        avgPerInsider >= 500_000 ? 60 + (avgPerInsider - 500_000) * (20 / 500_000) :
+        40 + (avgPerInsider) * (20 / 500_000);
+
+    // === 5. CONCENTRATION (large single buys = conviction) ===
+    const maxSingleBuy = Math.max(...trades.map(t => Number(t.value_usd || 0)));
+    const concentrationRatio = maxSingleBuy / totalValue;
+    const concentrationScore =
+        concentrationRatio >= 0.8 ? 85 :  // one huge buy
+        concentrationRatio >= 0.5 ? 75 :
+        concentrationRatio >= 0.3 ? 60 :
+        50;
+
+    // === WEIGHTED COMPOSITE ===
+    const weights = {
+        insider: 0.25,
+        cluster: 0.25,
+        timing: 0.20,
+        size: 0.15,
+        concentration: 0.15
+    };
+
     const score =
-        insiderScore  * weights.insider  +
-        clusterScore  * weights.cluster  +
-        valuationScore* weights.valuation+
-        momentumScore * weights.momentum+
-        liquidityScore* weights.liquidity;
+        insiderScore * weights.insider +
+        clusterScore * weights.cluster +
+        timingScore * weights.timing +
+        sizeScore * weights.size +
+        concentrationScore * weights.concentration;
 
     return {
         ticker,
         score: Math.round(score),
         breakdown: {
-            insider:   Math.round(insiderScore),
-            cluster:   Math.round(clusterScore),
-            valuation: Math.round(valuationScore),
-            momentum:  Math.round(momentumScore),
-            liquidity: Math.round(liquidityScore),
+            insider: Math.round(insiderScore),
+            cluster: Math.round(clusterScore),
+            timing: Math.round(timingScore),
+            size: Math.round(sizeScore),
+            concentration: Math.round(concentrationScore),
+        },
+        meta: {
+            total_value: totalValue,
+            num_insiders: distinctInsiders,
+            num_trades: trades.length,
+            c_suite_count: cSuiteCount,
+            days_since_last: Math.round(daysSinceLast),
+            avg_per_insider: Math.round(avgPerInsider),
+            max_single_buy: maxSingleBuy,
         }
     };
 }
@@ -81,7 +141,8 @@ export async function scoreBulk(pool, tickers = []) {
         try {
             out.push(await scoreTicker(pool, t));
         } catch (e) {
-            out.push({ ticker: t, score: null, breakdown: null });
+            console.error(`[score] ${t}:`, e.message);
+            out.push({ ticker: t, score: null, breakdown: null, meta: null });
         }
     }
     return out;

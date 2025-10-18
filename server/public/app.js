@@ -201,9 +201,9 @@ function scoreBadge(score) {
     const n = Number(score);
     if (!Number.isFinite(n)) return `<span class="score-badge score-neutral">-</span>`;
     let cls = "score-weak";
-    if (n >= 80) cls = "score-strong";
-    else if (n >= 65) cls = "score-good";
-    else if (n >= 50) cls = "score-neutral";
+    if (n >= 85) cls = "score-strong";       // Raised thresholds
+    else if (n >= 70) cls = "score-good";
+    else if (n >= 55) cls = "score-neutral";
     return `<span class="score-badge ${cls}" title="Conviction Score">${n}</span>`;
 }
 
@@ -215,13 +215,15 @@ function renderTradeRow(t, prices, scores) {
     const scObj = scores[t.ticker];
     const scVal = scObj?.score ?? null;
     const bd    = scObj?.breakdown ?? null;
+    const meta  = scObj?.meta ?? null;
+
     const safeNum0 = (x) => (x == null ? "-" : Number(x).toFixed(0));
     const bdTitle = bd
-        ? `Insider: ${safeNum0(bd.insider)}
-Cluster: ${safeNum0(bd.cluster)}
-Valuation: ${safeNum0(bd.valuation)}
-Momentum: ${safeNum0(bd.momentum)}
-Liquidity: ${safeNum0(bd.liquidity)}`
+        ? `Insider: ${safeNum0(bd.insider)} | Cluster: ${safeNum0(bd.cluster)} | Timing: ${safeNum0(bd.timing)}
+Size: ${safeNum0(bd.size)} | Concentration: ${safeNum0(bd.concentration)}
+---
+${meta ? `Insiders: ${meta.num_insiders} | Trades: ${meta.num_trades} | C-Suite: ${meta.c_suite_count}
+Days Since Last: ${meta.days_since_last} | Avg/Insider: $${(meta.avg_per_insider/1000).toFixed(0)}k` : ''}`
         : "No breakdown";
 
     return `
@@ -241,7 +243,6 @@ Liquidity: ${safeNum0(bd.liquidity)}`
       </td>
       <td>
         <button class="btn" onclick="loadSummary('${t.ticker}')">AI Summary</button>
-        <button class="btn btn-secondary" onclick="predictTicker('${t.ticker}')">Predict</button>
       </td>
     </tr>
   `;
